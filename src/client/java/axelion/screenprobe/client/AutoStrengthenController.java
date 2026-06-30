@@ -73,6 +73,10 @@ final class AutoStrengthenController {
     private static State state = State.IDLE;
     private static int maxRolls = AutoStrengthenConfig.Config.defaults().defaultRolls();
     private static int rollsDone;
+    private static int observedStrengthenLevel;
+    private static int pendingRollBaselineLevel;
+    private static int pendingRollBaselineAttributes;
+    private static int pendingRollStableTicks;
     private static int delayTicks;
     private static int timeoutTicks;
     private static int nonStrengthenScreenTicks;
@@ -417,6 +421,7 @@ final class AutoStrengthenController {
         insertHeldItemRequested = true;
         maxRolls = config.defaultRolls();
         rollsDone = 0;
+        resetRollObservation();
         delayTicks = 0;
         timeoutTicks = TIMEOUT_TICKS;
         nonStrengthenScreenTicks = 0;
@@ -470,6 +475,10 @@ final class AutoStrengthenController {
         insertHeldItemRequested = config.autoInsertHeldItem();
         maxRolls = requestedRolls;
         rollsDone = 0;
+        observedStrengthenLevel = 0;
+        pendingRollBaselineLevel = 0;
+        pendingRollBaselineAttributes = 0;
+        pendingRollStableTicks = 0;
         delayTicks = 0;
         timeoutTicks = TIMEOUT_TICKS;
         nonStrengthenScreenTicks = 0;
@@ -516,6 +525,8 @@ final class AutoStrengthenController {
 
     private static void beginRolling(Minecraft client, AbstractContainerScreen<?> screen, Slot itemSlot) {
         clearBeforeStartRequested = clearBeforeStartPending;
+        observedStrengthenLevel = readStrengthenLevel(client, itemSlot.getItem()).orElse(0);
+        rollsDone = 0;
         state = clearBeforeStartRequested ? State.READY_TO_CLEAR : State.READY_TO_ROLL;
         delayTicks = 0;
         timeoutTicks = TIMEOUT_TICKS;
@@ -847,6 +858,7 @@ final class AutoStrengthenController {
         insertHeldItemRequested = true;
         returningFromClear = false;
         rollsDone = 0;
+        resetRollObservation();
         client.getConnection().sendCommand(config.cdCommand());
         state = State.CLICK_EQUIPMENT_CATEGORY;
         delayTicks = actionDelayTicks(client);
@@ -1023,6 +1035,7 @@ final class AutoStrengthenController {
         }
 
         rollsDone = 0;
+        resetRollObservation();
         insertHeldItemRequested = true;
         state = State.READY_TO_INSERT_HELD;
         delayTicks = actionDelayTicks(client);
@@ -1072,9 +1085,13 @@ final class AutoStrengthenController {
             return;
         }
 
+        pendingRollBaselineLevel = readStrengthenLevel(client, itemSlot.get().getItem()).orElse(observedStrengthenLevel);
+        pendingRollBaselineAttributes = lastEvaluation.orderedValues().size();
+        pendingRollStableTicks = 0;
         clickSlot(client, screen, confirmSlot);
-        rollsDone++;
-        runLog.add("clickedConfirmRoll=" + rollsDone);
+        runLog.add("clickedConfirmRollPending=" + (rollsDone + 1)
+                + ",baselineLevel=" + pendingRollBaselineLevel
+                + ",baselineAttributes=" + pendingRollBaselineAttributes);
         state = State.WAIT_FOR_RESULT;
         delayTicks = resultDelayTicks(client);
         timeoutTicks = TIMEOUT_TICKS;
@@ -1089,6 +1106,25 @@ final class AutoStrengthenController {
         }
 
         lastEvaluation = evaluate(client, itemSlot.get().getItem());
+        Optional<Integer> currentLevel = readStrengthenLevel(client, itemSlot.get().getItem());
+        int currentAttributes = lastEvaluation.orderedValues().size();
+        boolean levelAdvanced = currentLevel.isPresent() && currentLevel.get() > pendingRollBaselineLevel;
+        boolean attributesAdvanced = currentAttributes > pendingRollBaselineAttributes;
+        if (!levelAdvanced && !attributesAdvanced) {
+            pendingRollStableTicks++;
+            runLog.add("waitingForStrengthenResultUpdate="
+                    + (rollsDone + 1)
+                    + ",level=" + currentLevel.map(String::valueOf).orElse("?")
+                    + ",baselineLevel=" + pendingRollBaselineLevel
+                    + ",attributes=" + currentAttributes
+                    + ",baselineAttributes=" + pendingRollBaselineAttributes
+                    + ",ticks=" + pendingRollStableTicks);
+            delayTicks = actionDelayTicks(client);
+            return;
+        }
+
+        rollsDone++;
+        observedStrengthenLevel = currentLevel.orElse(Math.max(observedStrengthenLevel, pendingRollBaselineLevel));
         appendEvaluationLog("第 " + rollsDone + " 次强化后", itemSlot.get().getItem(), lastEvaluation);
 
         if (lastEvaluation.keep()) {
@@ -1701,6 +1737,40 @@ final class AutoStrengthenController {
             ScreenProbe.LOGGER.warn("Failed to read strengthen item tooltip for {}", stack, exception);
         }
         return lines;
+    }
+
+    private static void resetRollObservation() {
+        observedStrengthenLevel = 0;
+        pendingRollBaselineLevel = 0;
+        pendingRollBaselineAttributes = 0;
+        pendingRollStableTicks = 0;
+    }
+
+    private static Optional<Integer> readStrengthenLevel(Minecraft client, ItemStack stack) {
+        for (String line : collectItemLines(client, stack)) {
+            String stripped = stripFormatting(line);
+            if (!containsNormalized(stripped, "装备强化")) {
+                continue;
+            }
+            int slash = stripped.indexOf('/');
+            if (slash < 0) {
+                continue;
+            }
+            String beforeSlash = stripped.substring(0, slash);
+            Matcher matcher = INTEGER_PATTERN.matcher(beforeSlash);
+            Integer current = null;
+            while (matcher.find()) {
+                try {
+                    current = Integer.parseInt(matcher.group(1));
+                } catch (NumberFormatException ignored) {
+                    current = null;
+                }
+            }
+            if (current != null && current >= 0 && current <= 100) {
+                return Optional.of(current);
+            }
+        }
+        return Optional.empty();
     }
 
     private static int readAttributeValue(String line, String attribute) {
