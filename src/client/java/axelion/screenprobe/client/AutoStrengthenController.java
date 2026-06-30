@@ -1256,9 +1256,7 @@ final class AutoStrengthenController {
                 + "原因：" + evaluation.reason() + "\n"
                 + "概览：" + evaluation.summary() + "\n"
                 + "装备属性：" + formatEvaluationAttributes(evaluation);
-        Thread notificationThread = new Thread(() -> sendFeishuSdkMessage(config, text), "ranmc-feishu-notify");
-        notificationThread.setDaemon(true);
-        notificationThread.start();
+        sendFeishuTextMessage(config, text);
     }
 
     private static String formatEvaluationAttributes(Evaluation evaluation) {
@@ -1273,6 +1271,12 @@ final class AutoStrengthenController {
             builder.append(attribute.name()).append("+").append(attribute.value());
         }
         return builder.toString();
+    }
+
+    static void sendFeishuTextMessage(AutoStrengthenConfig.Config config, String text) {
+        Thread notificationThread = new Thread(() -> sendFeishuSdkMessage(config, text), "ranmc-feishu-notify");
+        notificationThread.setDaemon(true);
+        notificationThread.start();
     }
 
     private static void sendFeishuSdkMessage(AutoStrengthenConfig.Config config, String text) {

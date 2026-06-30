@@ -183,6 +183,36 @@ final class ScreenProbeConfigScreenFactory {
                                 () -> strengthenDraft.feishuReceiveIdType, value -> strengthenDraft.feishuReceiveIdType = value))
                         .option(stringOption("飞书接收ID", "群聊 chat_id 或用户 open_id 等，需与接收类型一致。", strengthenDefaults.feishuReceiveId(),
                                 () -> strengthenDraft.feishuReceiveId, value -> strengthenDraft.feishuReceiveId = value))
+                        .option(ButtonOption.createBuilder()
+                                .name(Component.literal("飞书测试消息"))
+                                .text(Component.literal("发送"))
+                                .description(OptionDescription.of(Component.literal("使用当前飞书 SDK 配置发送一条测试消息。")))
+                                .action(screen -> {
+                                    AutoStrengthenConfig.setAndSave(client, strengthenDraft.toConfig().clamped());
+                                    FeishuSdkController.sendTestMessage(client);
+                                })
+                                .build())
+                        .option(ButtonOption.createBuilder()
+                                .name(Component.literal("飞书长连接"))
+                                .text(Component.literal("打开"))
+                                .description(OptionDescription.of(Component.literal("使用当前 App ID/App Secret 启动飞书 SDK 长连接。")))
+                                .action(screen -> {
+                                    AutoStrengthenConfig.setAndSave(client, strengthenDraft.toConfig().clamped());
+                                    FeishuSdkController.startLongConnection(client);
+                                })
+                                .build())
+                        .option(ButtonOption.createBuilder()
+                                .name(Component.literal("关闭长连接"))
+                                .text(Component.literal("关闭"))
+                                .description(OptionDescription.of(Component.literal("关闭当前飞书 SDK 长连接。")))
+                                .action(screen -> FeishuSdkController.stopLongConnection(client))
+                                .build())
+                        .option(ButtonOption.createBuilder()
+                                .name(Component.literal("长连接状态"))
+                                .text(Component.literal("查看"))
+                                .description(OptionDescription.of(Component.literal("输出当前飞书 SDK 长连接状态。")))
+                                .action(screen -> FeishuSdkController.sendStatus(client))
+                                .build())
                         .build())
                 .save(() -> {
                     ScreenProbeGlobalConfig.Config globalSaved = globalDraft.toConfig().clamped();
