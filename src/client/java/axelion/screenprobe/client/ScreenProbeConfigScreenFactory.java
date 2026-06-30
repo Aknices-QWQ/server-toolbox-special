@@ -22,6 +22,7 @@ final class ScreenProbeConfigScreenFactory {
             ClassLoader loader = ScreenProbeConfigScreenFactory.class.getClassLoader();
             Class.forName(ScreenProbeConfigScreenFactory.class.getName() + "$Draft", true, loader);
             Class.forName(ScreenProbeConfigScreenFactory.class.getName() + "$StrengthenDraft", true, loader);
+            Class.forName(ScreenProbeConfigScreenFactory.class.getName() + "$MineDraft", true, loader);
         } catch (ClassNotFoundException | LinkageError exception) {
             axelion.screenprobe.ScreenProbe.LOGGER.warn("Failed to preload autosettings classes", exception);
         }
@@ -33,10 +34,13 @@ final class ScreenProbeConfigScreenFactory {
         AutoNetherWartConfig.Config current = AutoNetherWartConfig.get(client);
         AutoStrengthenConfig.Config strengthenDefaults = AutoStrengthenConfig.Config.defaults();
         AutoStrengthenConfig.Config strengthenCurrent = AutoStrengthenConfig.get(client);
+        AutoMineConfig.Config mineDefaults = AutoMineConfig.Config.defaults();
+        AutoMineConfig.Config mineCurrent = AutoMineConfig.get(client);
         ScreenProbeGlobalConfig.Config globalDefaults = ScreenProbeGlobalConfig.Config.defaults();
         ScreenProbeGlobalConfig.Config globalCurrent = ScreenProbeGlobalConfig.get(client);
         Draft draft = new Draft(current);
         StrengthenDraft strengthenDraft = new StrengthenDraft(strengthenCurrent);
+        MineDraft mineDraft = new MineDraft(mineCurrent);
         GlobalDraft globalDraft = new GlobalDraft(globalCurrent);
 
         YetAnotherConfigLib config = YetAnotherConfigLib.createBuilder()
@@ -214,6 +218,23 @@ final class ScreenProbeConfigScreenFactory {
                                 .action(screen -> FeishuSdkController.sendStatus(client))
                                 .build())
                         .build())
+                .category(ConfigCategory.createBuilder()
+                        .name(Component.literal("自动挖矿"))
+                        .option(booleanOption("启用", "关闭后屏蔽 /automine。", mineDefaults.enabled(),
+                                () -> mineDraft.enabled, value -> mineDraft.enabled = value))
+                        .option(intOption("播报间隔秒", "自动挖矿定时播报间隔。", mineDefaults.reportIntervalSeconds(), 30, 3600,
+                                () -> mineDraft.reportIntervalSeconds, value -> mineDraft.reportIntervalSeconds = value))
+                        .option(intOption("每地标残骸组数", "下界每个地标挖够多少组后标记完成。", mineDefaults.netherTargetStacksPerPoint(), 1, 27,
+                                () -> mineDraft.netherTargetStacksPerPoint, value -> mineDraft.netherTargetStacksPerPoint = value))
+                        .option(stringOption("资源随机传送命令", "进入资源世界后执行的随机传送命令，不含斜杠。", mineDefaults.resourceRandomTeleportCommand(),
+                                () -> mineDraft.resourceRandomTeleportCommand, value -> mineDraft.resourceRandomTeleportCommand = value))
+                        .option(ButtonOption.createBuilder()
+                                .name(Component.literal("清空下界标记"))
+                                .text(Component.literal("清空"))
+                                .description(OptionDescription.of(Component.literal("删除所有下界1-100完成标记。")))
+                                .action(screen -> AutoMineController.clearCompletedNetherPoints(client))
+                                .build())
+                        .build())
                 .save(() -> {
                     ScreenProbeGlobalConfig.Config globalSaved = globalDraft.toConfig().clamped();
                     ScreenProbeGlobalConfig.setAndSave(client, globalSaved);
@@ -223,6 +244,8 @@ final class ScreenProbeConfigScreenFactory {
                     AutoNetherWartController.applyConfig(client, saved);
                     AutoStrengthenConfig.Config strengthenSaved = strengthenDraft.toConfig().clamped();
                     AutoStrengthenConfig.setAndSave(client, strengthenSaved);
+                    AutoMineConfig.Config mineSaved = mineDraft.toConfig().clamped();
+                    AutoMineConfig.setAndSave(client, mineSaved);
                 })
                 .build();
         return config.generateScreen(parent);
@@ -467,6 +490,31 @@ final class ScreenProbeConfigScreenFactory {
                     feishuAppSecret,
                     feishuReceiveIdType,
                     feishuReceiveId
+            );
+        }
+    }
+
+    private static final class MineDraft {
+        private boolean enabled;
+        private int reportIntervalSeconds;
+        private int netherTargetStacksPerPoint;
+        private String resourceRandomTeleportCommand;
+
+        private MineDraft(AutoMineConfig.Config current) {
+            enabled = current.enabled();
+            reportIntervalSeconds = current.reportIntervalSeconds();
+            netherTargetStacksPerPoint = current.netherTargetStacksPerPoint();
+            resourceRandomTeleportCommand = current.resourceRandomTeleportCommand();
+        }
+
+        private AutoMineConfig.Config toConfig() {
+            return new AutoMineConfig.Config(
+                    enabled,
+                    reportIntervalSeconds,
+                    netherTargetStacksPerPoint,
+                    resourceRandomTeleportCommand,
+                    "",
+                    AutoMineConfig.get(Minecraft.getInstance()).completedNetherPoints()
             );
         }
     }

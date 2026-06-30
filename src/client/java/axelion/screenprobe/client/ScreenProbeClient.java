@@ -151,6 +151,7 @@ public final class ScreenProbeClient implements ClientModInitializer {
         ClientCommandRegistrationCallback.EVENT.register(ScreenProbeClient::registerCommands);
         ClientReceiveMessageEvents.ALLOW_GAME.register((message, overlay) -> {
             ScreenProbeGlobalConfig.handleServerMessage(message.getString());
+            AutoMineController.handleServerMessage(message.getString());
             return true;
         });
         ClientTickEvents.END_CLIENT_TICK.register(ScreenProbeClient::onClientTick);
@@ -163,6 +164,7 @@ public final class ScreenProbeClient implements ClientModInitializer {
         AutoChunkMinerController.registerCommands(dispatcher);
         CdHelpDumpController.registerCommands(dispatcher);
         AutoStrengthenController.registerCommands(dispatcher);
+        AutoMineController.registerCommands(dispatcher);
         AutoNetherWartController.registerCommands(dispatcher);
         AutoBoatDispenserController.registerCommands(dispatcher);
         AutoVillagerTradeController.registerCommands(dispatcher);
@@ -258,6 +260,7 @@ public final class ScreenProbeClient implements ClientModInitializer {
         AutoChunkMinerController.tick(client);
         CdHelpDumpController.tick(client);
         AutoStrengthenController.tick(client);
+        AutoMineController.tick(client);
         AutoNetherWartController.tick(client);
         AutoBoatDispenserController.tick(client);
         AutoVillagerTradeController.tick(client);
@@ -2340,6 +2343,7 @@ public final class ScreenProbeClient implements ClientModInitializer {
         AutoDragonController.handleSessionReset(client);
         AutoChunkMinerController.handleSessionReset(client);
         AutoStrengthenController.handleSessionReset(client);
+        AutoMineController.handleSessionReset(client);
         AutoNetherWartController.handleSessionReset(client);
         AutoBoatDispenserController.handleSessionReset(client);
         AutoVillagerTradeController.handleSessionReset(client);
