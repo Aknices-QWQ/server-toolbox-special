@@ -46,6 +46,7 @@ final class AutoMineController {
     private static final int MAX_BACKPACK_INDEX = 100;
     private static final int STORE_SHULKER_TIMEOUT_TICKS = 20 * 12;
     private static final Pattern BACKPACK_NAME_PATTERN = Pattern.compile("背包(\\d+)");
+    private static final Pattern TEMP_BACKPACK_NAME_PATTERN = Pattern.compile("临时背包(\\d+)");
     private static final Set<String> DIAMOND_KEEP_IDS = Set.of(
             "minecraft:diamond_ore",
             "minecraft:deepslate_diamond_ore",
@@ -76,8 +77,14 @@ final class AutoMineController {
     private static int storeMovedAmount;
     private static int storePickupTimeoutTicks;
     private static int storeMiningTicks;
+    private static int tempBackpackNextIndex = 1;
+    private static int tempCurrentBackpackIndex;
+    private static int tempMovedStacks;
+    private static int tempAttempts;
     private static boolean waitingAfterDeath;
     private static boolean storeMiningActive;
+    private static boolean temporaryInventoryPrepared;
+    private static State nextStateAfterTemporaryPrepare = State.IDLE;
     private static BlockPos storeShulkerPos;
     private static BlockPos storeMineTarget;
     private static String lastDeathMessage = "";
@@ -152,6 +159,14 @@ final class AutoMineController {
 
         switch (state) {
             case PREPARE_PICKAXE -> tickPreparePickaxe(client);
+            case OPEN_EC_FOR_TEMP_PREPARE -> tickOpenEcForTempPrepare(client);
+            case TAKE_TEMP_BACKPACK_FROM_EC -> tickTakeTempBackpackFromEc(client);
+            case PLACE_TEMP_BACKPACK -> tickPlaceTempBackpack(client);
+            case OPEN_TEMP_BACKPACK -> tickOpenTempBackpack(client);
+            case STORE_TEMP_INVENTORY -> tickStoreTempInventory(client);
+            case PICKUP_TEMP_BACKPACK -> tickPickupTempBackpack(client);
+            case OPEN_EC_FOR_TEMP_RETURN -> tickOpenEcForTempReturn(client);
+            case RETURN_TEMP_BACKPACK_TO_EC -> tickReturnTempBackpackToEc(client);
             case OPEN_RESOURCE_MENU -> tickOpenResourceMenu(client);
             case CLICK_WORLD_TELEPORT -> tickClickMenu(client, "世界传送", State.CLICK_RESOURCE_WORLD);
             case CLICK_RESOURCE_WORLD -> tickClickMenu(client, "资源世界", State.RANDOM_TELEPORT_RESOURCE);
@@ -222,7 +237,10 @@ final class AutoMineController {
         pointStartOreCount = countTargetOre(client);
         pointStoredOreCount = 0;
         lastOreCount = pointStartOreCount;
+        temporaryInventoryPrepared = false;
         resetStoreState();
+        resetTempState();
+        nextStateAfterTemporaryPrepare = State.IDLE;
         sendMessage(client, "自动挖矿启动：" + mode.label() + "。");
         sendFeishu(client, "自动挖矿启动：" + mode.label());
     }
@@ -238,6 +256,7 @@ final class AutoMineController {
         baritoneCooldownTicks = 0;
         waitingAfterDeath = false;
         resetStoreState();
+        resetTempState();
         if (message != null) {
             sendMessage(client, message);
             if (notify) {
@@ -248,17 +267,176 @@ final class AutoMineController {
 
     private static void tickPreparePickaxe(Minecraft client) {
         if (selectBestPickaxe(client)) {
-            if (mode == MineMode.DIAMOND) {
-                state = State.OPEN_RESOURCE_MENU;
-            } else {
-                state = State.OPEN_NETHER_MENU;
-            }
+            nextStateAfterTemporaryPrepare = mode == MineMode.DIAMOND ? State.OPEN_RESOURCE_MENU : State.OPEN_NETHER_MENU;
+            state = needsTemporaryInventoryPrepare(client) ? State.OPEN_EC_FOR_TEMP_PREPARE : nextStateAfterTemporaryPrepare;
             delayTicks = MENU_DELAY_TICKS;
             return;
         }
         sendMessage(client, "背包没有合格镐子，正在打开 /ec。请手动准备精准采集/效率5/耐久3镐子。");
         client.getConnection().sendCommand("ec");
         stop(client, "未找到合格镐子，自动挖矿已暂停。", true);
+    }
+
+    private static void tickOpenEcForTempPrepare(Minecraft client) {
+        if (!needsTemporaryInventoryPrepare(client)) {
+            temporaryInventoryPrepared = true;
+            state = nextStateAfterTemporaryPrepare;
+            delayTicks = MENU_DELAY_TICKS;
+            return;
+        }
+        closeScreenIfNeeded(client);
+        client.getConnection().sendCommand("ec");
+        state = State.TAKE_TEMP_BACKPACK_FROM_EC;
+        delayTicks = MENU_DELAY_TICKS;
+        timeoutTicks = TIMEOUT_TICKS;
+        sendMessage(client, "开挖前整理背包：正在从 /ec 取出 临时背包。");
+    }
+
+    private static void tickTakeTempBackpackFromEc(Minecraft client) {
+        if (!(client.screen instanceof AbstractContainerScreen<?> screen)) {
+            if (timeoutTicks <= 0) {
+                stop(client, "等待 /ec 末影箱超时，无法存入临时背包。", true);
+            }
+            return;
+        }
+        BackpackSlot backpack = findTempBackpackSlot(screen, tempBackpackNextIndex);
+        if (backpack == null) {
+            stop(client, "没有在 /ec 中找到可用的 临时背包" + tempBackpackNextIndex + "+，自动挖矿已停止。", true);
+            return;
+        }
+        tempCurrentBackpackIndex = backpack.number;
+        tempBackpackNextIndex = backpack.number + 1;
+        tempAttempts++;
+        clickContainerSlot(client, screen, backpack.slotIndex, 0, ContainerInput.QUICK_MOVE);
+        closeScreenIfNeeded(client);
+        state = State.PLACE_TEMP_BACKPACK;
+        delayTicks = MENU_DELAY_TICKS;
+        timeoutTicks = TIMEOUT_TICKS;
+    }
+
+    private static void tickPlaceTempBackpack(Minecraft client) {
+        if (!hasTempBackpackShulkerInInventory(client, tempCurrentBackpackIndex)) {
+            retryNextTempBackpack(client, "没有确认拿到 临时背包" + tempCurrentBackpackIndex);
+            return;
+        }
+        Optional<BlockPos> placePos = findShulkerPlacementPos(client);
+        if (placePos.isEmpty()) {
+            stop(client, "附近没有可安全放置临时潜影盒的位置，自动挖矿已停止。", true);
+            return;
+        }
+        if (!selectOrMoveToHotbar(client, stack -> isTempBackpackShulkerStack(stack, tempCurrentBackpackIndex))) {
+            retryNextTempBackpack(client, "无法把 临时背包" + tempCurrentBackpackIndex + " 移到热键栏");
+            return;
+        }
+        storeShulkerPos = placePos.get();
+        placeShulker(client, storeShulkerPos);
+        state = State.OPEN_TEMP_BACKPACK;
+        delayTicks = MENU_DELAY_TICKS * 2;
+        timeoutTicks = STORE_SHULKER_TIMEOUT_TICKS;
+    }
+
+    private static void tickOpenTempBackpack(Minecraft client) {
+        if (storeShulkerPos == null) {
+            retryNextTempBackpack(client, "临时潜影盒位置丢失");
+            return;
+        }
+        if (client.level.getBlockState(storeShulkerPos).getBlock() instanceof ShulkerBoxBlock) {
+            openPlacedShulker(client, storeShulkerPos);
+            state = State.STORE_TEMP_INVENTORY;
+            delayTicks = MENU_DELAY_TICKS;
+            timeoutTicks = STORE_SHULKER_TIMEOUT_TICKS;
+            return;
+        }
+        if (timeoutTicks <= 0) {
+            retryNextTempBackpack(client, "临时背包" + tempCurrentBackpackIndex + " 未成功放置");
+        }
+    }
+
+    private static void tickStoreTempInventory(Minecraft client) {
+        if (!(client.screen instanceof AbstractContainerScreen<?> screen)) {
+            if (timeoutTicks <= 0) {
+                retryCurrentTempBackpackPickup(client, "等待 临时背包" + tempCurrentBackpackIndex + " 打开超时");
+            }
+            return;
+        }
+        tempMovedStacks = quickMoveTemporaryInventoryIntoOpenContainer(client, screen);
+        closeScreenIfNeeded(client);
+        state = State.PICKUP_TEMP_BACKPACK;
+        storePickupTimeoutTicks = STORE_SHULKER_TIMEOUT_TICKS;
+        storeMiningActive = false;
+        storeMiningTicks = 0;
+        delayTicks = MENU_DELAY_TICKS;
+    }
+
+    private static void tickPickupTempBackpack(Minecraft client) {
+        closeScreenIfNeeded(client);
+        if (storeShulkerPos == null || !(client.level.getBlockState(storeShulkerPos).getBlock() instanceof ShulkerBoxBlock)) {
+            clearStoreMining(client);
+            if (hasTempBackpackShulkerInInventory(client, tempCurrentBackpackIndex)) {
+                state = State.OPEN_EC_FOR_TEMP_RETURN;
+                delayTicks = MENU_DELAY_TICKS;
+                timeoutTicks = TIMEOUT_TICKS;
+                return;
+            }
+            if (storePickupTimeoutTicks-- <= 0) {
+                stop(client, "临时背包" + tempCurrentBackpackIndex + " 已挖掉但未进入背包，请手动确认掉落物。", true);
+            }
+            return;
+        }
+        if (storePickupTimeoutTicks-- <= 0) {
+            clearStoreMining(client);
+            stop(client, "挖回 临时背包" + tempCurrentBackpackIndex + " 超时，请手动确认潜影盒位置。", true);
+            return;
+        }
+        if (!selectBestPickaxe(client)) {
+            stop(client, "没有合格镐子挖回 临时背包" + tempCurrentBackpackIndex + "，自动挖矿已停止。", true);
+            return;
+        }
+        mineBlock(client, storeShulkerPos);
+    }
+
+    private static void tickOpenEcForTempReturn(Minecraft client) {
+        if (!hasTempBackpackShulkerInInventory(client, tempCurrentBackpackIndex)) {
+            stop(client, "未检测到需要放回 /ec 的 临时背包" + tempCurrentBackpackIndex + "，自动挖矿已停止。", true);
+            return;
+        }
+        closeScreenIfNeeded(client);
+        client.getConnection().sendCommand("ec");
+        state = State.RETURN_TEMP_BACKPACK_TO_EC;
+        delayTicks = MENU_DELAY_TICKS;
+        timeoutTicks = TIMEOUT_TICKS;
+    }
+
+    private static void tickReturnTempBackpackToEc(Minecraft client) {
+        if (!(client.screen instanceof AbstractContainerScreen<?> screen)) {
+            if (timeoutTicks <= 0) {
+                stop(client, "等待 /ec 放回 临时背包" + tempCurrentBackpackIndex + " 超时，自动挖矿已停止。", true);
+            }
+            return;
+        }
+        int before = countTempBackpackShulkerInInventory(client, tempCurrentBackpackIndex);
+        quickMoveTempBackpackShulkerIntoOpenContainer(client, screen, tempCurrentBackpackIndex);
+        closeScreenIfNeeded(client);
+        int after = countTempBackpackShulkerInInventory(client, tempCurrentBackpackIndex);
+        if (after >= before) {
+            stop(client, "没有确认 临时背包" + tempCurrentBackpackIndex + " 放回 /ec，自动挖矿已停止。", true);
+            return;
+        }
+        if (needsTemporaryInventoryPrepare(client) && tempMovedStacks > 0) {
+            sendMessage(client, "临时背包" + tempCurrentBackpackIndex + " 已放回 /ec，继续整理剩余物品。");
+            resetTempPlacedState();
+            state = State.OPEN_EC_FOR_TEMP_PREPARE;
+        } else if (needsTemporaryInventoryPrepare(client)) {
+            retryNextTempBackpack(client, "临时背包" + tempCurrentBackpackIndex + " 没有接收物品");
+        } else {
+            temporaryInventoryPrepared = true;
+            sendMessage(client, "开挖前背包整理完成，已存入临时背包。");
+            State next = nextStateAfterTemporaryPrepare;
+            resetTempState();
+            state = next;
+        }
+        delayTicks = MENU_DELAY_TICKS;
+        timeoutTicks = TIMEOUT_TICKS;
     }
 
     private static void tickOpenResourceMenu(Minecraft client) {
@@ -848,8 +1026,24 @@ final class AutoMineController {
         return text.contains("背包" + number) && !text.contains("临时背包");
     }
 
+    private static boolean isTempBackpackShulkerStack(ItemStack stack, int number) {
+        if (stack == null || stack.isEmpty()) {
+            return false;
+        }
+        String id = BuiltInRegistries.ITEM.getKey(stack.getItem()).toString();
+        if (!id.contains("shulker_box")) {
+            return false;
+        }
+        String text = normalize(collectText(Minecraft.getInstance(), stack));
+        return text.contains("临时背包" + number);
+    }
+
     private static boolean hasBackpackShulkerInInventory(Minecraft client, int number) {
         return countBackpackShulkerInInventory(client, number) > 0;
+    }
+
+    private static boolean hasTempBackpackShulkerInInventory(Minecraft client, int number) {
+        return countTempBackpackShulkerInInventory(client, number) > 0;
     }
 
     private static int countBackpackShulkerInInventory(Minecraft client, int number) {
@@ -857,6 +1051,17 @@ final class AutoMineController {
         Inventory inventory = client.player.getInventory();
         for (int slot = 0; slot < Inventory.INVENTORY_SIZE; slot++) {
             if (isBackpackShulkerStack(inventory.getItem(slot), number)) {
+                count += inventory.getItem(slot).getCount();
+            }
+        }
+        return count;
+    }
+
+    private static int countTempBackpackShulkerInInventory(Minecraft client, int number) {
+        int count = 0;
+        Inventory inventory = client.player.getInventory();
+        for (int slot = 0; slot < Inventory.INVENTORY_SIZE; slot++) {
+            if (isTempBackpackShulkerStack(inventory.getItem(slot), number)) {
                 count += inventory.getItem(slot).getCount();
             }
         }
@@ -882,6 +1087,24 @@ final class AutoMineController {
         return moved;
     }
 
+    private static int quickMoveTemporaryInventoryIntoOpenContainer(Minecraft client, AbstractContainerScreen<?> screen) {
+        int moved = 0;
+        List<Slot> slots = screen.getMenu().slots;
+        int playerInventoryStart = Math.max(0, slots.size() - 36);
+        for (int slotIndex = playerInventoryStart; slotIndex < slots.size(); slotIndex++) {
+            Slot slot = slots.get(slotIndex);
+            if (slot == null || !slot.hasItem() || !slot.isActive()) {
+                continue;
+            }
+            if (!shouldMoveToTemporaryBackpack(slot.getItem())) {
+                continue;
+            }
+            clickContainerSlot(client, screen, slotIndex, 0, ContainerInput.QUICK_MOVE);
+            moved++;
+        }
+        return moved;
+    }
+
     private static void quickMoveBackpackShulkerIntoOpenContainer(Minecraft client, AbstractContainerScreen<?> screen, int number) {
         List<Slot> slots = screen.getMenu().slots;
         int playerInventoryStart = Math.max(0, slots.size() - 36);
@@ -891,6 +1114,22 @@ final class AutoMineController {
                 continue;
             }
             if (!isBackpackShulkerStack(slot.getItem(), number)) {
+                continue;
+            }
+            clickContainerSlot(client, screen, slotIndex, 0, ContainerInput.QUICK_MOVE);
+            return;
+        }
+    }
+
+    private static void quickMoveTempBackpackShulkerIntoOpenContainer(Minecraft client, AbstractContainerScreen<?> screen, int number) {
+        List<Slot> slots = screen.getMenu().slots;
+        int playerInventoryStart = Math.max(0, slots.size() - 36);
+        for (int slotIndex = playerInventoryStart; slotIndex < slots.size(); slotIndex++) {
+            Slot slot = slots.get(slotIndex);
+            if (slot == null || !slot.hasItem() || !slot.isActive()) {
+                continue;
+            }
+            if (!isTempBackpackShulkerStack(slot.getItem(), number)) {
                 continue;
             }
             clickContainerSlot(client, screen, slotIndex, 0, ContainerInput.QUICK_MOVE);
@@ -923,6 +1162,82 @@ final class AutoMineController {
             }
         }
         return best;
+    }
+
+    private static BackpackSlot findTempBackpackSlot(AbstractContainerScreen<?> screen, int minIndex) {
+        List<Slot> slots = screen.getMenu().slots;
+        int playerInventoryStart = Math.max(0, slots.size() - 36);
+        BackpackSlot best = null;
+        for (int slotIndex = 0; slotIndex < playerInventoryStart; slotIndex++) {
+            Slot slot = slots.get(slotIndex);
+            if (slot == null || !slot.hasItem() || !slot.isActive()) {
+                continue;
+            }
+            String text = normalize(collectText(Minecraft.getInstance(), slot.getItem()));
+            Matcher matcher = TEMP_BACKPACK_NAME_PATTERN.matcher(text);
+            while (matcher.find()) {
+                int number = parsePositiveInt(matcher.group(1));
+                if (number < minIndex || number > MAX_BACKPACK_INDEX) {
+                    continue;
+                }
+                if (best == null || number < best.number) {
+                    best = new BackpackSlot(slotIndex, number);
+                }
+            }
+        }
+        return best;
+    }
+
+    private static boolean needsTemporaryInventoryPrepare(Minecraft client) {
+        if (temporaryInventoryPrepared) {
+            return false;
+        }
+        Inventory inventory = client.player.getInventory();
+        for (int slot = 0; slot < Inventory.INVENTORY_SIZE; slot++) {
+            if (shouldMoveToTemporaryBackpack(inventory.getItem(slot))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean shouldMoveToTemporaryBackpack(ItemStack stack) {
+        if (stack == null || stack.isEmpty()) {
+            return false;
+        }
+        String id = BuiltInRegistries.ITEM.getKey(stack.getItem()).toString();
+        if (isPickaxe(stack) || id.contains("shulker_box")) {
+            return false;
+        }
+        if (id.equals("minecraft:torch") || id.contains("food") || id.contains("bread")
+                || id.contains("beef") || id.contains("porkchop") || id.contains("chicken")
+                || id.contains("mutton") || id.contains("potato") || id.contains("carrot")
+                || id.contains("apple")) {
+            return false;
+        }
+        return true;
+    }
+
+    private static void retryNextTempBackpack(Minecraft client, String reason) {
+        closeScreenIfNeeded(client);
+        clearStoreMining(client);
+        if (tempAttempts >= MAX_BACKPACK_INDEX || tempBackpackNextIndex > MAX_BACKPACK_INDEX) {
+            stop(client, reason + "，已尝试到 临时背包" + Math.min(tempBackpackNextIndex - 1, MAX_BACKPACK_INDEX) + "，自动挖矿已停止。", true);
+            return;
+        }
+        sendMessage(client, reason + "，尝试下一个临时背包。");
+        resetTempPlacedState();
+        state = State.OPEN_EC_FOR_TEMP_PREPARE;
+        delayTicks = MENU_DELAY_TICKS;
+        timeoutTicks = TIMEOUT_TICKS;
+    }
+
+    private static void retryCurrentTempBackpackPickup(Minecraft client, String reason) {
+        sendMessage(client, reason + "，先挖回并放回 /ec。");
+        tempMovedStacks = 0;
+        state = State.PICKUP_TEMP_BACKPACK;
+        storePickupTimeoutTicks = STORE_SHULKER_TIMEOUT_TICKS;
+        delayTicks = MENU_DELAY_TICKS;
     }
 
     private static int parsePositiveInt(String text) {
@@ -1064,6 +1379,23 @@ final class AutoMineController {
         clearStoreMining(Minecraft.getInstance());
     }
 
+    private static void resetTempPlacedState() {
+        tempCurrentBackpackIndex = 0;
+        tempMovedStacks = 0;
+        storePickupTimeoutTicks = 0;
+        storeShulkerPos = null;
+        clearStoreMining(Minecraft.getInstance());
+    }
+
+    private static void resetTempState() {
+        tempBackpackNextIndex = 1;
+        tempCurrentBackpackIndex = 0;
+        tempMovedStacks = 0;
+        tempAttempts = 0;
+        nextStateAfterTemporaryPrepare = State.IDLE;
+        resetTempPlacedState();
+    }
+
     private static String collectText(Minecraft client, ItemStack stack) {
         StringBuilder builder = new StringBuilder(stack.getHoverName().getString());
         try {
@@ -1129,6 +1461,14 @@ final class AutoMineController {
     private enum State {
         IDLE,
         PREPARE_PICKAXE,
+        OPEN_EC_FOR_TEMP_PREPARE,
+        TAKE_TEMP_BACKPACK_FROM_EC,
+        PLACE_TEMP_BACKPACK,
+        OPEN_TEMP_BACKPACK,
+        STORE_TEMP_INVENTORY,
+        PICKUP_TEMP_BACKPACK,
+        OPEN_EC_FOR_TEMP_RETURN,
+        RETURN_TEMP_BACKPACK_TO_EC,
         OPEN_RESOURCE_MENU,
         CLICK_WORLD_TELEPORT,
         CLICK_RESOURCE_WORLD,
