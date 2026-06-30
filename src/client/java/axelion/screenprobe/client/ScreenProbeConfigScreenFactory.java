@@ -173,6 +173,12 @@ final class ScreenProbeConfigScreenFactory {
                                 () -> strengthenDraft.clearAttributesMenuLabel, value -> strengthenDraft.clearAttributesMenuLabel = value))
                         .option(stringOption("确认清除名", "清除属性界面中确认执行的按钮名。", strengthenDefaults.clearAttributesConfirmLabel(),
                                 () -> strengthenDraft.clearAttributesConfirmLabel, value -> strengthenDraft.clearAttributesConfirmLabel = value))
+                        .option(booleanOption("飞书出货通知", "自动强化命中保留条件时发送飞书机器人通知。", strengthenDefaults.feishuNotificationEnabled(),
+                                () -> strengthenDraft.feishuNotificationEnabled, value -> strengthenDraft.feishuNotificationEnabled = value))
+                        .option(stringOption("飞书Webhook", "飞书群自定义机器人的 Webhook URL。", strengthenDefaults.feishuWebhookUrl(),
+                                () -> strengthenDraft.feishuWebhookUrl, value -> strengthenDraft.feishuWebhookUrl = value))
+                        .option(stringOption("飞书Secret", "飞书机器人签名校验密钥；未开启签名时留空。", strengthenDefaults.feishuSecret(),
+                                () -> strengthenDraft.feishuSecret, value -> strengthenDraft.feishuSecret = value))
                         .build())
                 .save(() -> {
                     ScreenProbeGlobalConfig.Config globalSaved = globalDraft.toConfig().clamped();
@@ -372,6 +378,9 @@ final class ScreenProbeConfigScreenFactory {
         private String strengthenMenuLabel;
         private String clearAttributesMenuLabel;
         private String clearAttributesConfirmLabel;
+        private boolean feishuNotificationEnabled;
+        private String feishuWebhookUrl;
+        private String feishuSecret;
 
         private StrengthenDraft(AutoStrengthenConfig.Config current) {
             defaultRolls = current.defaultRolls();
@@ -391,6 +400,9 @@ final class ScreenProbeConfigScreenFactory {
             strengthenMenuLabel = current.strengthenMenuLabel();
             clearAttributesMenuLabel = current.clearAttributesMenuLabel();
             clearAttributesConfirmLabel = current.clearAttributesConfirmLabel();
+            feishuNotificationEnabled = current.feishuNotificationEnabled();
+            feishuWebhookUrl = current.feishuWebhookUrl();
+            feishuSecret = current.feishuSecret();
         }
 
         private AutoStrengthenConfig.Config toConfig() {
@@ -411,7 +423,10 @@ final class ScreenProbeConfigScreenFactory {
                     equipmentCategoryLabel,
                     strengthenMenuLabel,
                     clearAttributesMenuLabel,
-                    clearAttributesConfirmLabel
+                    clearAttributesConfirmLabel,
+                    feishuNotificationEnabled,
+                    feishuWebhookUrl,
+                    feishuSecret
             );
         }
     }

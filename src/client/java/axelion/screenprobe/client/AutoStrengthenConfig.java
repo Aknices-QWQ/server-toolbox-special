@@ -72,7 +72,10 @@ final class AutoStrengthenConfig {
                     readString(properties, "equipmentCategoryLabel", values.equipmentCategoryLabel()),
                     readString(properties, "strengthenMenuLabel", values.strengthenMenuLabel()),
                     readString(properties, "clearAttributesMenuLabel", values.clearAttributesMenuLabel()),
-                    readString(properties, "clearAttributesConfirmLabel", values.clearAttributesConfirmLabel())
+                    readString(properties, "clearAttributesConfirmLabel", values.clearAttributesConfirmLabel()),
+                    readBoolean(properties, "feishuNotificationEnabled", values.feishuNotificationEnabled()),
+                    readString(properties, "feishuWebhookUrl", values.feishuWebhookUrl()),
+                    readString(properties, "feishuSecret", values.feishuSecret())
             ).clamped();
         } catch (IOException | NumberFormatException exception) {
             ScreenProbe.LOGGER.warn("Failed to load auto strengthen config from {}", path.toAbsolutePath(), exception);
@@ -104,6 +107,9 @@ final class AutoStrengthenConfig {
         properties.setProperty("strengthenMenuLabel", config.strengthenMenuLabel());
         properties.setProperty("clearAttributesMenuLabel", config.clearAttributesMenuLabel());
         properties.setProperty("clearAttributesConfirmLabel", config.clearAttributesConfirmLabel());
+        properties.setProperty("feishuNotificationEnabled", Boolean.toString(config.feishuNotificationEnabled()));
+        properties.setProperty("feishuWebhookUrl", config.feishuWebhookUrl());
+        properties.setProperty("feishuSecret", config.feishuSecret());
 
         try {
             Files.createDirectories(path.getParent());
@@ -160,12 +166,14 @@ final class AutoStrengthenConfig {
                   boolean autoClearMixedLowAttributes, int autoClearAttributeCount,
                   int autoClearAttributeSumThreshold, String cdCommand, String equipmentCategoryLabel,
                   String strengthenMenuLabel, String clearAttributesMenuLabel,
-                  String clearAttributesConfirmLabel) {
+                  String clearAttributesConfirmLabel, boolean feishuNotificationEnabled,
+                  String feishuWebhookUrl, String feishuSecret) {
         static Config defaults() {
             return new Config(4, 7, 7, 5, 5, 7,
                     true, true, false,
                     true, 2, 3,
-                    "cd", "装备属性", "装备强化", "清除属性", "确认清除");
+                    "cd", "装备属性", "装备强化", "清除属性", "确认清除",
+                    false, "", "");
         }
 
         Config clamped() {
@@ -187,7 +195,10 @@ final class AutoStrengthenConfig {
                     nonBlank(equipmentCategoryLabel, defaults.equipmentCategoryLabel()),
                     nonBlank(strengthenMenuLabel, defaults.strengthenMenuLabel()),
                     nonBlank(clearAttributesMenuLabel, defaults.clearAttributesMenuLabel()),
-                    nonBlank(clearAttributesConfirmLabel, defaults.clearAttributesConfirmLabel())
+                    nonBlank(clearAttributesConfirmLabel, defaults.clearAttributesConfirmLabel()),
+                    feishuNotificationEnabled,
+                    feishuWebhookUrl == null ? "" : feishuWebhookUrl.trim(),
+                    feishuSecret == null ? "" : feishuSecret.trim()
             );
         }
     }
