@@ -44,6 +44,8 @@ final class AutoStrengthenController {
     private static final DateTimeFormatter FILE_TIME_FORMAT = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss-SSS");
     private static final Pattern INTEGER_PATTERN = Pattern.compile("(?<![\\d.])([+-]?\\d+)(?![\\d.])");
     private static final int TIMEOUT_TICKS = 20 * 30;
+    private static final int MAX_MENU_RETRIES = 3;
+    private static final int MENU_STALL_RETRY_TICKS = 20;
 
     private static final List<String> DAMAGE_ATTRIBUTES = List.of(
             "物理伤害",
@@ -74,6 +76,8 @@ final class AutoStrengthenController {
     private static int delayTicks;
     private static int timeoutTicks;
     private static int nonStrengthenScreenTicks;
+    private static int menuMissingSlotTicks;
+    private static int menuRetryAttemptsRemaining;
     private static boolean clearBeforeStartPending;
     private static boolean clearBeforeStartRequested;
     private static boolean insertHeldItemRequested;
@@ -170,7 +174,9 @@ final class AutoStrengthenController {
             if (!isStrengthenScreen(client.screen)) {
                 nonStrengthenScreenTicks++;
                 if (nonStrengthenScreenTicks >= 6) {
-                    stop(client, "已退出装备强化界面，自动强化已关闭。", true);
+                    if (!retryMenuFlow(client, false, "装备强化菜单打开异常或页面不可点击")) {
+                        stop(client, "已退出装备强化界面，自动强化已关闭。", true);
+                    }
                     return;
                 }
                 return;
@@ -190,6 +196,7 @@ final class AutoStrengthenController {
 
         switch (state) {
             case OPEN_ROOT_MENU -> tickOpenRootMenu(client);
+            case OPEN_ROOT_MENU_FOR_CLEAR -> tickOpenRootMenuForClear(client);
             case WAIT_FOR_SCREEN_CLOSE -> tickWaitForScreenClose(client);
             case WAIT_FOR_CRAFTING_TABLE -> tickWaitForCraftingTable(client);
             case READY_TO_CRAFT_TARGET -> {
@@ -413,6 +420,8 @@ final class AutoStrengthenController {
         delayTicks = 0;
         timeoutTicks = TIMEOUT_TICKS;
         nonStrengthenScreenTicks = 0;
+        menuMissingSlotTicks = 0;
+        menuRetryAttemptsRemaining = MAX_MENU_RETRIES;
         lastEvaluation = Evaluation.empty();
         lastLogPath = null;
         runLog.clear();
@@ -464,6 +473,8 @@ final class AutoStrengthenController {
         delayTicks = 0;
         timeoutTicks = TIMEOUT_TICKS;
         nonStrengthenScreenTicks = 0;
+        menuMissingSlotTicks = 0;
+        menuRetryAttemptsRemaining = MAX_MENU_RETRIES;
         lastEvaluation = Evaluation.empty();
         lastLogPath = null;
         runLog.clear();
@@ -534,6 +545,18 @@ final class AutoStrengthenController {
         timeoutTicks = TIMEOUT_TICKS;
     }
 
+    private static void tickOpenRootMenuForClear(Minecraft client) {
+        AutoStrengthenConfig.Config config = AutoStrengthenConfig.get(client);
+        if (client.screen != null) {
+            beginCloseScreen(client, State.OPEN_ROOT_MENU_FOR_CLEAR, "打开清除属性根菜单");
+            return;
+        }
+        client.getConnection().sendCommand(config.cdCommand());
+        state = State.CLICK_EQUIPMENT_CATEGORY_FOR_CLEAR;
+        delayTicks = actionDelayTicks(client);
+        timeoutTicks = TIMEOUT_TICKS;
+    }
+
     private static void tickWaitForScreenClose(Minecraft client) {
         if (client.screen != null) {
             closeCurrentScreen(client);
@@ -578,9 +601,17 @@ final class AutoStrengthenController {
             slot = findSlotByAnyText(containerScreen, CLEAR_MENU_FALLBACK_LABELS);
         }
         if (slot < 0) {
+            menuMissingSlotTicks++;
+            if (menuMissingSlotTicks >= MENU_STALL_RETRY_TICKS) {
+                boolean forClear = isClearMenuNavigationState(nextState);
+                if (!retryMenuFlow(client, forClear, "菜单页面不可点击或没有找到 " + label)) {
+                    stop(client, "没有找到 " + label + "，自动强化已停止。", true);
+                }
+            }
             return;
         }
 
+        menuMissingSlotTicks = 0;
         clickSlot(client, containerScreen, slot);
         runLog.add("clickedMenu=" + label);
         state = nextState;
@@ -820,6 +851,35 @@ final class AutoStrengthenController {
         state = State.CLICK_EQUIPMENT_CATEGORY;
         delayTicks = actionDelayTicks(client);
         timeoutTicks = TIMEOUT_TICKS;
+    }
+
+    private static boolean isClearMenuNavigationState(State nextState) {
+        return state == State.CLICK_EQUIPMENT_CATEGORY_FOR_CLEAR
+                || state == State.CLICK_CLEAR_MENU
+                || nextState == State.CLICK_CLEAR_MENU
+                || nextState == State.READY_TO_INSERT_CLEAR_HELD;
+    }
+
+    private static boolean retryMenuFlow(Minecraft client, boolean forClear, String reason) {
+        if (menuRetryAttemptsRemaining <= 0) {
+            return false;
+        }
+
+        menuRetryAttemptsRemaining--;
+        menuMissingSlotTicks = 0;
+        nonStrengthenScreenTicks = 0;
+        State retryState = forClear ? State.OPEN_ROOT_MENU_FOR_CLEAR : State.OPEN_ROOT_MENU;
+        runLog.add("retryMenuFlow=" + reason + ",forClear=" + forClear
+                + ",remaining=" + menuRetryAttemptsRemaining);
+        sendMessage(client, reason + "，正在重试打开菜单。剩余 " + menuRetryAttemptsRemaining + " 次。");
+        if (client.screen != null) {
+            beginCloseScreen(client, retryState, "重试打开菜单");
+        } else {
+            state = retryState;
+            delayTicks = actionDelayTicks(client);
+            timeoutTicks = TIMEOUT_TICKS;
+        }
+        return true;
     }
 
     private static void tickWaitForCraftingTable(Minecraft client) {
@@ -1728,7 +1788,9 @@ final class AutoStrengthenController {
     private static AbstractContainerScreen<?> requireStrengthenScreen(Minecraft client) {
         Screen screen = client.screen;
         if (!(screen instanceof AbstractContainerScreen<?> containerScreen) || !isStrengthenScreen(screen)) {
-            stop(client, "请保持打开 桃花源丨装备强化 界面，自动强化已停止。", true);
+            if (!retryMenuFlow(client, false, "没有进入装备强化页面")) {
+                stop(client, "请保持打开 桃花源丨装备强化 界面，自动强化已停止。", true);
+            }
             return null;
         }
         return containerScreen;
@@ -1737,7 +1799,9 @@ final class AutoStrengthenController {
     private static AbstractContainerScreen<?> requireClearScreen(Minecraft client) {
         Screen screen = client.screen;
         if (!(screen instanceof AbstractContainerScreen<?> containerScreen) || !isClearScreen(screen)) {
-            stop(client, "请保持打开 清除属性 界面，自动强化已停止。", true);
+            if (!retryMenuFlow(client, true, "没有进入清除属性页面")) {
+                stop(client, "请保持打开 清除属性 界面，自动强化已停止。", true);
+            }
             return null;
         }
         return containerScreen;
@@ -1865,6 +1929,7 @@ final class AutoStrengthenController {
     private enum State {
         IDLE,
         OPEN_ROOT_MENU,
+        OPEN_ROOT_MENU_FOR_CLEAR,
         WAIT_FOR_SCREEN_CLOSE,
         WAIT_FOR_CRAFTING_TABLE,
         READY_TO_CRAFT_TARGET,

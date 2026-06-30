@@ -99,6 +99,7 @@ public final class ScreenProbeClient implements ClientModInitializer {
     private static final int CHEST_OPEN_TIMEOUT_TICKS = 20 * 8;
     private static final int CHEST_OPERATION_COOLDOWN_TICKS = 20 * 60 * 30;
     private static final int MAX_CHEST_RETRIES = 5;
+    private static final int MAX_REFILL_RETRIES = 3;
     private static final int MAX_MODE_SEARCH_INTERVAL_TICKS = 20;
     private static final int LOCAL_PATH_NODE_LIMIT = 2048;
     private static final int LOCAL_PATH_SEARCH_RADIUS = 56;
@@ -117,6 +118,7 @@ public final class ScreenProbeClient implements ClientModInitializer {
     private static int targetSellSoldCount;
     private static boolean yoloCheckQueued;
     private static int retryAttemptsRemaining;
+    private static int refillRetryAttemptsRemaining;
     private static boolean retryAfterClose;
     private static LocalDate saleStatsDate;
     private static int soldTodayCount;
@@ -649,6 +651,7 @@ public final class ScreenProbeClient implements ClientModInitializer {
         }
         refillInventoryCountBefore = 0;
         refillMovedStackClicks = 0;
+        refillRetryAttemptsRemaining = MAX_REFILL_RETRIES;
         autoSellState = AutoSellState.WAITING_FOR_REFILL_CD_MENU;
         autoSellDelayTicks = refillScreenDelayTicks(client);
         autoSellTimeoutTicks = REFILL_TIMEOUT_TICKS;
@@ -1029,7 +1032,9 @@ public final class ScreenProbeClient implements ClientModInitializer {
             }
             case WAITING_FOR_REFILL_CD_MENU, WAITING_FOR_REFILL_CROP_STORAGE, WAITING_FOR_REFILL_ITEM_STORAGE, WAITING_FOR_REFILL_VERIFY -> {
                 closeActiveContainerScreen(client);
-                handleSellFailure(client, "补仓等待超时，没有成功从作物仓库取出 " + autoSellRefillItemQuery + "。", true);
+                if (!retryRefillFlow(client, "补仓页面不可点击或等待超时")) {
+                    handleSellFailure(client, "补仓等待超时，没有成功从作物仓库取出 " + autoSellRefillItemQuery + "。", true);
+                }
             }
             case WAITING_FOR_SELL_MENU, WAITING_FOR_CONFIRM_DIALOG, WAITING_FOR_MENU_RETURN ->
                     handleSellFailure(client, "主人，我这次等得太久了，只好先收手啦。", shouldAnnounceFailures());
@@ -2129,6 +2134,26 @@ public final class ScreenProbeClient implements ClientModInitializer {
         autoSellDelayTicks = screenActionDelayTicks(client);
         autoSellTimeoutTicks = FLOW_TIMEOUT_TICKS;
         client.player.closeContainer();
+        return true;
+    }
+
+    private static boolean retryRefillFlow(Minecraft client, String reason) {
+        if (refillRetryAttemptsRemaining <= 0 || client == null || client.getConnection() == null) {
+            return false;
+        }
+
+        refillRetryAttemptsRemaining--;
+        if (client.player != null && client.screen instanceof AbstractContainerScreen<?>) {
+            client.player.closeContainer();
+        }
+        refillInventoryCountBefore = 0;
+        refillMovedStackClicks = 0;
+        autoSellState = AutoSellState.WAITING_FOR_REFILL_CD_MENU;
+        autoSellDelayTicks = refillScreenDelayTicks(client);
+        autoSellTimeoutTicks = REFILL_TIMEOUT_TICKS;
+        String command = AutoNetherWartConfig.get(client).cropStorageCommand();
+        client.getConnection().sendCommand(command);
+        sendMessage(client, reason + "，正在重试打开 /" + command + "。剩余 " + refillRetryAttemptsRemaining + " 次。");
         return true;
     }
 
