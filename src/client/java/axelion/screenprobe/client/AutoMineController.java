@@ -24,6 +24,8 @@ import java.util.Locale;
 import java.util.Optional;
 import java.util.Set;
 import java.util.function.Predicate;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 final class AutoMineController {
     private static final String COMMAND = "automine";
@@ -34,6 +36,8 @@ final class AutoMineController {
     private static final int REPORT_MIN_TICKS = 20 * 60;
     private static final int INVENTORY_FULL_THRESHOLD_EMPTY_SLOTS = 3;
     private static final int PICKAXE_REPAIR_DAMAGE_THRESHOLD = 250;
+    private static final int MAX_BACKPACK_INDEX = 100;
+    private static final Pattern BACKPACK_NAME_PATTERN = Pattern.compile("背包(\\d+)");
     private static final Set<String> DIAMOND_KEEP_IDS = Set.of(
             "minecraft:diamond_ore",
             "minecraft:deepslate_diamond_ore",
@@ -54,8 +58,13 @@ final class AutoMineController {
     private static int reconnectDelayTicks;
     private static int currentNetherPoint;
     private static int pointStartOreCount;
+    private static int pointStoredOreCount;
     private static int lastOreCount;
     private static int lavaDeathCount;
+    private static int storeOreCountBefore;
+    private static int storeBackpackNextIndex = 1;
+    private static int storeCurrentBackpackIndex;
+    private static int storeAttempts;
     private static boolean waitingAfterDeath;
     private static String lastDeathMessage = "";
 
@@ -138,6 +147,10 @@ final class AutoMineController {
             case CLICK_NETHER_POINT -> tickClickNetherPoint(client);
             case START_BARITONE -> startBaritoneMine(client);
             case MINING -> tickMining(client);
+            case OPEN_EC_FOR_STORE -> tickOpenEcForStore(client);
+            case CLICK_BACKPACK_FOR_STORE -> tickClickBackpackForStore(client);
+            case STORE_ORES_IN_BACKPACK -> tickStoreOresInBackpack(client);
+            case VERIFY_BACKPACK_STORE -> tickVerifyBackpackStore(client);
             case REPAIR_PICKAXE -> tickRepairPickaxe(client);
             case WAIT_AFTER_DEATH -> tickWaitAfterDeath(client);
             case IDLE -> {
@@ -189,7 +202,9 @@ final class AutoMineController {
         lastDeathMessage = "";
         currentNetherPoint = mode == MineMode.DEBRIS ? nextNetherPoint(client) : 0;
         pointStartOreCount = countTargetOre(client);
+        pointStoredOreCount = 0;
         lastOreCount = pointStartOreCount;
+        resetStoreState();
         sendMessage(client, "自动挖矿启动：" + mode.label() + "。");
         sendFeishu(client, "自动挖矿启动：" + mode.label());
     }
@@ -204,6 +219,7 @@ final class AutoMineController {
         timeoutTicks = 0;
         baritoneCooldownTicks = 0;
         waitingAfterDeath = false;
+        resetStoreState();
         if (message != null) {
             sendMessage(client, message);
             if (notify) {
@@ -295,6 +311,7 @@ final class AutoMineController {
         }
         clickSlot(client, screen, slot);
         pointStartOreCount = countTargetOre(client);
+        pointStoredOreCount = 0;
         state = State.START_BARITONE;
         delayTicks = 20 * 8;
         timeoutTicks = TIMEOUT_TICKS;
@@ -322,7 +339,7 @@ final class AutoMineController {
             lastOreCount = oreCount;
         }
         if (mode == MineMode.DEBRIS) {
-            int gained = oreCount - pointStartOreCount;
+            int gained = pointStoredOreCount + oreCount - pointStartOreCount;
             int target = AutoMineConfig.get(client).netherTargetStacksPerPoint() * 64;
             if (gained >= target) {
                 AutoMineConfig.markNetherPointDone(client, currentNetherPoint);
@@ -333,8 +350,7 @@ final class AutoMineController {
             }
         }
         if (emptyInventorySlots(client) <= INVENTORY_FULL_THRESHOLD_EMPTY_SLOTS) {
-            sendBaritone(client, "#stop");
-            stop(client, "背包接近满，安全存盒流程未确认，已停止防止误丢。当前矿物 " + oreCount + " 个。", true);
+            beginBackpackStore(client, oreCount);
             return;
         }
         if (shouldRepairPickaxe(client)) {
@@ -347,6 +363,93 @@ final class AutoMineController {
             sendBaritone(client, mineCommand());
             baritoneCooldownTicks = BARITONE_REISSUE_TICKS;
         }
+    }
+
+    private static void beginBackpackStore(Minecraft client, int oreCount) {
+        sendBaritone(client, "#stop");
+        if (oreCount <= 0) {
+            stop(client, "背包接近满，但没有检测到可存入 /ec 的目标矿物，已停止。", true);
+            return;
+        }
+        storeOreCountBefore = oreCount;
+        storeBackpackNextIndex = 1;
+        storeCurrentBackpackIndex = 0;
+        storeAttempts = 0;
+        state = State.OPEN_EC_FOR_STORE;
+        delayTicks = MENU_DELAY_TICKS;
+        timeoutTicks = TIMEOUT_TICKS;
+        sendMessage(client, "背包接近满，正在打开 /ec 存入目标矿物。当前 " + oreCount + " 个。");
+    }
+
+    private static void tickOpenEcForStore(Minecraft client) {
+        closeScreenIfNeeded(client);
+        client.getConnection().sendCommand("ec");
+        state = State.CLICK_BACKPACK_FOR_STORE;
+        delayTicks = MENU_DELAY_TICKS;
+        timeoutTicks = TIMEOUT_TICKS;
+    }
+
+    private static void tickClickBackpackForStore(Minecraft client) {
+        if (!(client.screen instanceof AbstractContainerScreen<?> screen)) {
+            if (timeoutTicks <= 0) {
+                stop(client, "等待 /ec 背包菜单超时，自动挖矿已停止。", true);
+            }
+            return;
+        }
+        BackpackSlot backpack = findBackpackSlot(screen, storeBackpackNextIndex);
+        if (backpack == null) {
+            stop(client, "没有在 /ec 中找到可用的 背包" + storeBackpackNextIndex + "+，自动挖矿已停止。", true);
+            return;
+        }
+        storeCurrentBackpackIndex = backpack.number;
+        storeBackpackNextIndex = backpack.number + 1;
+        storeAttempts++;
+        clickContainerSlot(client, screen, backpack.slotIndex, 0, ContainerInput.PICKUP);
+        state = State.STORE_ORES_IN_BACKPACK;
+        delayTicks = MENU_DELAY_TICKS;
+        timeoutTicks = TIMEOUT_TICKS;
+    }
+
+    private static void tickStoreOresInBackpack(Minecraft client) {
+        if (!(client.screen instanceof AbstractContainerScreen<?> screen)) {
+            if (timeoutTicks <= 0) {
+                retryNextBackpack(client, "等待背包" + storeCurrentBackpackIndex + "打开超时");
+            }
+            return;
+        }
+        quickMoveTargetOresIntoOpenContainer(client, screen);
+        state = State.VERIFY_BACKPACK_STORE;
+        delayTicks = MENU_DELAY_TICKS;
+        timeoutTicks = TIMEOUT_TICKS;
+    }
+
+    private static void tickVerifyBackpackStore(Minecraft client) {
+        int after = countTargetOre(client);
+        if (after < storeOreCountBefore) {
+            int moved = storeOreCountBefore - after;
+            pointStoredOreCount += moved;
+            lastOreCount = after;
+            closeScreenIfNeeded(client);
+            sendMessage(client, "已通过 /ec 存入 背包" + storeCurrentBackpackIndex + "：" + moved + " 个目标矿物，继续挖矿。");
+            resetStoreState();
+            state = State.START_BARITONE;
+            delayTicks = MENU_DELAY_TICKS;
+            timeoutTicks = TIMEOUT_TICKS;
+            return;
+        }
+        retryNextBackpack(client, "背包" + storeCurrentBackpackIndex + " 未接收目标矿物");
+    }
+
+    private static void retryNextBackpack(Minecraft client, String reason) {
+        closeScreenIfNeeded(client);
+        if (storeAttempts >= MAX_BACKPACK_INDEX || storeBackpackNextIndex > MAX_BACKPACK_INDEX) {
+            stop(client, reason + "，已尝试到 背包" + Math.min(storeBackpackNextIndex - 1, MAX_BACKPACK_INDEX) + "，自动挖矿已停止。", true);
+            return;
+        }
+        sendMessage(client, reason + "，尝试下一个背包。");
+        state = State.OPEN_EC_FOR_STORE;
+        delayTicks = MENU_DELAY_TICKS;
+        timeoutTicks = TIMEOUT_TICKS;
     }
 
     private static void tickRepairPickaxe(Minecraft client) {
@@ -491,9 +594,7 @@ final class AutoMineController {
         int count = 0;
         for (int slot = 0; slot < Inventory.INVENTORY_SIZE; slot++) {
             ItemStack stack = client.player.getInventory().getItem(slot);
-            String id = BuiltInRegistries.ITEM.getKey(stack.getItem()).toString();
-            if ((mode == MineMode.DIAMOND && DIAMOND_KEEP_IDS.contains(id))
-                    || (mode == MineMode.DEBRIS && DEBRIS_KEEP_IDS.contains(id))) {
+            if (isTargetOreStack(stack)) {
                 count += stack.getCount();
             }
         }
@@ -504,7 +605,7 @@ final class AutoMineController {
         int count = countTargetOre(client);
         String message = "自动挖矿播报：" + mode.label() + " 当前背包目标矿物 " + count + " 个。";
         if (mode == MineMode.DEBRIS) {
-            message += " 地标：下界" + currentNetherPoint + "，本地标新增 " + Math.max(0, count - pointStartOreCount) + " 个。";
+            message += " 地标：下界" + currentNetherPoint + "，本地标新增 " + Math.max(0, pointStoredOreCount + count - pointStartOreCount) + " 个。";
         }
         sendMessage(client, message);
         sendFeishu(client, message);
@@ -555,6 +656,10 @@ final class AutoMineController {
         client.gameMode.handleContainerInput(screen.getMenu().containerId, slotIndex, 0, ContainerInput.PICKUP, client.player);
     }
 
+    private static void clickContainerSlot(Minecraft client, AbstractContainerScreen<?> screen, int slotIndex, int button, ContainerInput input) {
+        client.gameMode.handleContainerInput(screen.getMenu().containerId, slotIndex, button, input, client.player);
+    }
+
     private static void closeScreenIfNeeded(Minecraft client) {
         if (client.screen != null && client.player != null) {
             client.player.closeContainer();
@@ -587,6 +692,76 @@ final class AutoMineController {
         }
         String id = BuiltInRegistries.ITEM.getKey(stack.getItem()).toString();
         return id.endsWith("_pickaxe") || normalize(stack.getHoverName().getString()).contains("镐");
+    }
+
+    private static boolean isTargetOreStack(ItemStack stack) {
+        if (stack == null || stack.isEmpty()) {
+            return false;
+        }
+        String id = BuiltInRegistries.ITEM.getKey(stack.getItem()).toString();
+        return (mode == MineMode.DIAMOND && DIAMOND_KEEP_IDS.contains(id))
+                || (mode == MineMode.DEBRIS && DEBRIS_KEEP_IDS.contains(id));
+    }
+
+    private static int quickMoveTargetOresIntoOpenContainer(Minecraft client, AbstractContainerScreen<?> screen) {
+        int moved = 0;
+        List<Slot> slots = screen.getMenu().slots;
+        int playerInventoryStart = Math.max(0, slots.size() - 36);
+        for (int slotIndex = playerInventoryStart; slotIndex < slots.size(); slotIndex++) {
+            Slot slot = slots.get(slotIndex);
+            if (slot == null || !slot.hasItem() || !slot.isActive()) {
+                continue;
+            }
+            ItemStack stack = slot.getItem();
+            if (!isTargetOreStack(stack)) {
+                continue;
+            }
+            moved += stack.getCount();
+            clickContainerSlot(client, screen, slotIndex, 0, ContainerInput.QUICK_MOVE);
+        }
+        return moved;
+    }
+
+    private static BackpackSlot findBackpackSlot(AbstractContainerScreen<?> screen, int minIndex) {
+        List<Slot> slots = screen.getMenu().slots;
+        int playerInventoryStart = Math.max(0, slots.size() - 36);
+        BackpackSlot best = null;
+        for (int slotIndex = 0; slotIndex < playerInventoryStart; slotIndex++) {
+            Slot slot = slots.get(slotIndex);
+            if (slot == null || !slot.hasItem() || !slot.isActive()) {
+                continue;
+            }
+            String text = normalize(collectText(Minecraft.getInstance(), slot.getItem()));
+            if (text.contains("临时背包")) {
+                continue;
+            }
+            Matcher matcher = BACKPACK_NAME_PATTERN.matcher(text);
+            while (matcher.find()) {
+                int number = parsePositiveInt(matcher.group(1));
+                if (number < minIndex || number > MAX_BACKPACK_INDEX) {
+                    continue;
+                }
+                if (best == null || number < best.number) {
+                    best = new BackpackSlot(slotIndex, number);
+                }
+            }
+        }
+        return best;
+    }
+
+    private static int parsePositiveInt(String text) {
+        try {
+            return Integer.parseInt(text);
+        } catch (NumberFormatException ignored) {
+            return -1;
+        }
+    }
+
+    private static void resetStoreState() {
+        storeOreCountBefore = 0;
+        storeBackpackNextIndex = 1;
+        storeCurrentBackpackIndex = 0;
+        storeAttempts = 0;
     }
 
     private static String collectText(Minecraft client, ItemStack stack) {
@@ -663,7 +838,21 @@ final class AutoMineController {
         CLICK_NETHER_POINT,
         START_BARITONE,
         MINING,
+        OPEN_EC_FOR_STORE,
+        CLICK_BACKPACK_FOR_STORE,
+        STORE_ORES_IN_BACKPACK,
+        VERIFY_BACKPACK_STORE,
         REPAIR_PICKAXE,
         WAIT_AFTER_DEATH
+    }
+
+    private static final class BackpackSlot {
+        private final int slotIndex;
+        private final int number;
+
+        private BackpackSlot(int slotIndex, int number) {
+            this.slotIndex = slotIndex;
+            this.number = number;
+        }
     }
 }
