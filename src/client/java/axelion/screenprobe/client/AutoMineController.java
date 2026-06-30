@@ -82,6 +82,8 @@ final class AutoMineController {
     private static int tempMovedStacks;
     private static int tempAttempts;
     private static int shulkerPlaceMinDistance;
+    private static int repairHotbarSlot;
+    private static int repairInitialDamage;
     private static boolean waitingAfterDeath;
     private static boolean storeMiningActive;
     private static boolean temporaryInventoryPrepared;
@@ -185,7 +187,13 @@ final class AutoMineController {
             case PICKUP_STORED_BACKPACK -> tickPickupStoredBackpack(client);
             case OPEN_EC_FOR_RETURN -> tickOpenEcForReturn(client);
             case RETURN_BACKPACK_TO_EC -> tickReturnBackpackToEc(client);
-            case REPAIR_PICKAXE -> tickRepairPickaxe(client);
+            case OPEN_REPAIR_MENU -> tickOpenRepairMenu(client);
+            case CLICK_REPAIR_EQUIPMENT_CATEGORY -> tickClickMenu(client, "装备属性", State.CLICK_REPAIR_DURABILITY_MENU);
+            case CLICK_REPAIR_DURABILITY_MENU -> tickClickRepairDurabilityMenu(client);
+            case INSERT_PICKAXE_FOR_REPAIR -> tickInsertPickaxeForRepair(client);
+            case CLICK_REPAIR_CONFIRM -> tickClickRepairConfirm(client);
+            case WAIT_REPAIR_DONE -> tickWaitRepairDone(client);
+            case TAKE_REPAIRED_PICKAXE -> tickTakeRepairedPickaxe(client);
             case WAIT_AFTER_DEATH -> tickWaitAfterDeath(client);
             case IDLE -> {
             }
@@ -574,7 +582,7 @@ final class AutoMineController {
         }
         if (shouldRepairPickaxe(client)) {
             sendBaritone(client, "#stop");
-            state = State.REPAIR_PICKAXE;
+            state = State.OPEN_REPAIR_MENU;
             delayTicks = MENU_DELAY_TICKS;
             return;
         }
@@ -790,11 +798,172 @@ final class AutoMineController {
         beginPickupStoredBackpack(client);
     }
 
-    private static void tickRepairPickaxe(Minecraft client) {
+    private static void tickOpenRepairMenu(Minecraft client) {
         closeScreenIfNeeded(client);
+        if (!selectBestPickaxe(client)) {
+            stop(client, "没有找到可修复的合格镐子，自动挖矿已停止。", true);
+            return;
+        }
+        repairHotbarSlot = client.player.getInventory().getSelectedSlot();
+        repairInitialDamage = client.player.getMainHandItem().getDamageValue();
         client.getConnection().sendCommand("cd");
-        sendMessage(client, "镐子耐久偏低：请在 /cd -> 装备属性 -> 耐久度修复 完成修复后重新启动。");
-        stop(client, "已停止等待修复装备。", true);
+        state = State.CLICK_REPAIR_EQUIPMENT_CATEGORY;
+        delayTicks = MENU_DELAY_TICKS;
+        timeoutTicks = TIMEOUT_TICKS;
+        sendMessage(client, "镐子耐久偏低，正在进入 /cd -> 装备属性 -> 耐久度修复。");
+    }
+
+    private static void tickClickRepairDurabilityMenu(Minecraft client) {
+        if (!(client.screen instanceof AbstractContainerScreen<?> screen)) {
+            if (timeoutTicks <= 0) {
+                stop(client, "等待耐久修复菜单超时，自动挖矿已停止。", true);
+            }
+            return;
+        }
+        int slot = findSlotByAnyText(screen, List.of("耐久度修复", "耐久修复", "装备修复", "修复耐久"));
+        if (slot < 0) {
+            if (timeoutTicks <= 0) {
+                stop(client, "没有找到耐久度修复按钮，自动挖矿已停止。", true);
+            }
+            return;
+        }
+        clickSlot(client, screen, slot);
+        state = State.INSERT_PICKAXE_FOR_REPAIR;
+        delayTicks = MENU_DELAY_TICKS;
+        timeoutTicks = TIMEOUT_TICKS;
+    }
+
+    private static void tickInsertPickaxeForRepair(Minecraft client) {
+        if (!(client.screen instanceof AbstractContainerScreen<?> screen)) {
+            if (timeoutTicks <= 0) {
+                stop(client, "等待耐久修复页面超时，自动挖矿已停止。", true);
+            }
+            return;
+        }
+        if (findRepairPickaxeSlot(screen).isPresent()) {
+            state = State.CLICK_REPAIR_CONFIRM;
+            delayTicks = MENU_DELAY_TICKS;
+            timeoutTicks = TIMEOUT_TICKS;
+            return;
+        }
+        if (!isPickaxe(client.player.getMainHandItem())) {
+            stop(client, "主手不是镐子，无法自动修复。", true);
+            return;
+        }
+        int inputSlot = findRepairInputSlot(screen);
+        if (inputSlot < 0) {
+            if (timeoutTicks <= 0) {
+                stop(client, "没有找到耐久修复放入槽，自动挖矿已停止。", true);
+            }
+            return;
+        }
+        repairHotbarSlot = client.player.getInventory().getSelectedSlot();
+        repairInitialDamage = client.player.getMainHandItem().getDamageValue();
+        client.gameMode.handleContainerInput(
+                screen.getMenu().containerId,
+                inputSlot,
+                repairHotbarSlot,
+                ContainerInput.SWAP,
+                client.player
+        );
+        state = State.CLICK_REPAIR_CONFIRM;
+        delayTicks = MENU_DELAY_TICKS;
+        timeoutTicks = TIMEOUT_TICKS;
+    }
+
+    private static void tickClickRepairConfirm(Minecraft client) {
+        if (!(client.screen instanceof AbstractContainerScreen<?> screen)) {
+            if (timeoutTicks <= 0) {
+                stop(client, "等待耐久修复确认页面超时，自动挖矿已停止。", true);
+            }
+            return;
+        }
+        Optional<Slot> itemSlot = findRepairPickaxeSlot(screen);
+        if (itemSlot.isEmpty()) {
+            if (timeoutTicks <= 0) {
+                stop(client, "没有确认镐子已放入修复槽，自动挖矿已停止。", true);
+            }
+            return;
+        }
+        int confirmSlot = findRepairConfirmSlot(screen);
+        if (confirmSlot < 0) {
+            if (timeoutTicks <= 0) {
+                stop(client, "没有找到确认修复按钮，自动挖矿已停止。", true);
+            }
+            return;
+        }
+        clickSlot(client, screen, confirmSlot);
+        state = State.WAIT_REPAIR_DONE;
+        delayTicks = MENU_DELAY_TICKS;
+        timeoutTicks = TIMEOUT_TICKS;
+    }
+
+    private static void tickWaitRepairDone(Minecraft client) {
+        if (!(client.screen instanceof AbstractContainerScreen<?> screen)) {
+            if (timeoutTicks <= 0) {
+                stop(client, "等待耐久修复结果超时，自动挖矿已停止。", true);
+            }
+            return;
+        }
+        Optional<Slot> itemSlot = findRepairPickaxeSlot(screen);
+        if (itemSlot.isEmpty()) {
+            state = State.START_BARITONE;
+            delayTicks = MENU_DELAY_TICKS;
+            timeoutTicks = TIMEOUT_TICKS;
+            return;
+        }
+        ItemStack repaired = itemSlot.get().getItem();
+        int remaining = repaired.getMaxDamage() - repaired.getDamageValue();
+        if (repaired.getDamageValue() < repairInitialDamage || remaining > PICKAXE_REPAIR_DAMAGE_THRESHOLD) {
+            state = State.TAKE_REPAIRED_PICKAXE;
+            delayTicks = MENU_DELAY_TICKS;
+            timeoutTicks = TIMEOUT_TICKS;
+            return;
+        }
+        int confirmSlot = findRepairConfirmSlot(screen);
+        if (confirmSlot >= 0 && timeoutTicks % 40 == 0) {
+            clickSlot(client, screen, confirmSlot);
+            delayTicks = MENU_DELAY_TICKS;
+        }
+        if (timeoutTicks <= 0) {
+            stop(client, "耐久修复未确认成功，自动挖矿已停止。", true);
+        }
+    }
+
+    private static void tickTakeRepairedPickaxe(Minecraft client) {
+        if (!(client.screen instanceof AbstractContainerScreen<?> screen)) {
+            state = State.START_BARITONE;
+            delayTicks = MENU_DELAY_TICKS;
+            timeoutTicks = TIMEOUT_TICKS;
+            return;
+        }
+        Optional<Slot> itemSlot = findRepairPickaxeSlot(screen);
+        if (itemSlot.isPresent()) {
+            client.gameMode.handleContainerInput(
+                    screen.getMenu().containerId,
+                    itemSlot.get().index,
+                    Math.max(0, Math.min(repairHotbarSlot, Inventory.getSelectionSize() - 1)),
+                    ContainerInput.SWAP,
+                    client.player
+            );
+            delayTicks = MENU_DELAY_TICKS;
+        } else if (selectBestPickaxe(client) && !shouldRepairPickaxe(client)) {
+            closeScreenIfNeeded(client);
+            sendMessage(client, "镐子耐久修复完成，继续自动挖矿。");
+            state = State.START_BARITONE;
+            delayTicks = MENU_DELAY_TICKS;
+            timeoutTicks = TIMEOUT_TICKS;
+            return;
+        }
+        closeScreenIfNeeded(client);
+        if (!selectBestPickaxe(client)) {
+            stop(client, "修复后没有找到合格镐子，自动挖矿已停止。", true);
+            return;
+        }
+        sendMessage(client, "镐子耐久修复完成，继续自动挖矿。");
+        state = State.START_BARITONE;
+        delayTicks = MENU_DELAY_TICKS;
+        timeoutTicks = TIMEOUT_TICKS;
     }
 
     private static boolean handleDeath(Minecraft client) {
@@ -978,16 +1147,109 @@ final class AutoMineController {
     }
 
     private static int findSlotByText(AbstractContainerScreen<?> screen, String expectedText) {
-        for (Slot slot : screen.getMenu().slots) {
+        List<Slot> slots = screen.getMenu().slots;
+        int playerInventoryStart = Math.max(0, slots.size() - 36);
+        for (int slotIndex = 0; slotIndex < playerInventoryStart; slotIndex++) {
+            Slot slot = slots.get(slotIndex);
             if (!slot.hasItem()) {
                 continue;
             }
             ItemStack stack = slot.getItem();
             if (contains(stack.getHoverName().getString(), expectedText) || contains(collectText(Minecraft.getInstance(), stack), expectedText)) {
-                return slot.index;
+                return slotIndex;
             }
         }
         return -1;
+    }
+
+    private static int findSlotByAnyText(AbstractContainerScreen<?> screen, List<String> expectedTexts) {
+        for (String expectedText : expectedTexts) {
+            int slot = findSlotByText(screen, expectedText);
+            if (slot >= 0) {
+                return slot;
+            }
+        }
+        return -1;
+    }
+
+    private static int findRepairInputSlot(AbstractContainerScreen<?> screen) {
+        List<Slot> slots = screen.getMenu().slots;
+        int playerInventoryStart = Math.max(0, slots.size() - 36);
+        if (playerInventoryStart > 4) {
+            Slot center = slots.get(4);
+            if (center != null && center.isActive()) {
+                return 4;
+            }
+        }
+        for (int slotIndex = 0; slotIndex < playerInventoryStart; slotIndex++) {
+            Slot slot = slots.get(slotIndex);
+            if (slot == null || !slot.isActive()) {
+                continue;
+            }
+            if (!slot.hasItem()) {
+                return slotIndex;
+            }
+            ItemStack stack = slot.getItem();
+            if (contains(stack.getHoverName().getString(), "请放入")
+                    || contains(stack.getHoverName().getString(), "放入装备")
+                    || contains(stack.getHoverName().getString(), "修复槽")
+                    || contains(collectText(Minecraft.getInstance(), stack), "请放入")
+                    || contains(collectText(Minecraft.getInstance(), stack), "放入装备")
+                    || contains(collectText(Minecraft.getInstance(), stack), "修复槽")) {
+                return slotIndex;
+            }
+        }
+        return -1;
+    }
+
+    private static Optional<Slot> findRepairPickaxeSlot(AbstractContainerScreen<?> screen) {
+        List<Slot> slots = screen.getMenu().slots;
+        int playerInventoryStart = Math.max(0, slots.size() - 36);
+        for (int slotIndex = 0; slotIndex < playerInventoryStart; slotIndex++) {
+            Slot slot = slots.get(slotIndex);
+            if (slot == null || !slot.hasItem() || !slot.isActive()) {
+                continue;
+            }
+            ItemStack stack = slot.getItem();
+            if (isPickaxe(stack) && !isRepairControlStack(stack)) {
+                return Optional.of(slot);
+            }
+        }
+        return Optional.empty();
+    }
+
+    private static int findRepairConfirmSlot(AbstractContainerScreen<?> screen) {
+        int slot = findSlotByAnyText(screen, List.of("确认修复", "开始修复", "修复装备", "耐久修复", "点击修复"));
+        if (slot >= 0) {
+            return slot;
+        }
+        List<Slot> slots = screen.getMenu().slots;
+        int playerInventoryStart = Math.max(0, slots.size() - 36);
+        for (int slotIndex = 0; slotIndex < playerInventoryStart; slotIndex++) {
+            Slot candidate = slots.get(slotIndex);
+            if (candidate == null || !candidate.hasItem() || !candidate.isActive()) {
+                continue;
+            }
+            ItemStack stack = candidate.getItem();
+            String id = BuiltInRegistries.ITEM.getKey(stack.getItem()).toString();
+            String text = collectText(Minecraft.getInstance(), stack);
+            if ((id.contains("lime") || id.contains("emerald") || id.contains("anvil"))
+                    && (contains(text, "修复") || contains(text, "确认") || contains(text, "点击"))) {
+                return slotIndex;
+            }
+        }
+        return -1;
+    }
+
+    private static boolean isRepairControlStack(ItemStack stack) {
+        String id = BuiltInRegistries.ITEM.getKey(stack.getItem()).toString();
+        String text = collectText(Minecraft.getInstance(), stack);
+        return id.endsWith("_stained_glass_pane")
+                || contains(text, "请放入")
+                || contains(text, "确认修复")
+                || contains(text, "开始修复")
+                || contains(text, "点击修复")
+                || contains(text, "返回菜单");
     }
 
     private static void clickSlot(Minecraft client, AbstractContainerScreen<?> screen, int slotIndex) {
@@ -1535,7 +1797,13 @@ final class AutoMineController {
         PICKUP_STORED_BACKPACK,
         OPEN_EC_FOR_RETURN,
         RETURN_BACKPACK_TO_EC,
-        REPAIR_PICKAXE,
+        OPEN_REPAIR_MENU,
+        CLICK_REPAIR_EQUIPMENT_CATEGORY,
+        CLICK_REPAIR_DURABILITY_MENU,
+        INSERT_PICKAXE_FOR_REPAIR,
+        CLICK_REPAIR_CONFIRM,
+        WAIT_REPAIR_DONE,
+        TAKE_REPAIRED_PICKAXE,
         WAIT_AFTER_DEATH
     }
 
