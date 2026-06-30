@@ -2512,10 +2512,10 @@ public final class ScreenProbeClient implements ClientModInitializer {
 
     private static Path writeInspectionLog(Minecraft client, Screen screen, List<String> lines) {
         try {
-            Path logDir = client.gameDirectory.toPath().resolve("logs").resolve("screenprobe");
+            Path logDir = client.gameDirectory.toPath().resolve("logs").resolve("ranmc-toolbox");
             Files.createDirectories(logDir);
 
-            String fileName = "screenprobe-" + FILE_TIME_FORMAT.format(LocalDateTime.now())
+            String fileName = "ranmc-toolbox-" + FILE_TIME_FORMAT.format(LocalDateTime.now())
                     + "-" + screen.getClass().getSimpleName() + ".log";
             Path logFile = logDir.resolve(fileName);
 

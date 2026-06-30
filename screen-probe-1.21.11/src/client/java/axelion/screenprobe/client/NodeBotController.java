@@ -23,7 +23,7 @@ import java.util.concurrent.TimeUnit;
 final class NodeBotController {
     private static final String COMMAND = "nodebot";
     private static final String CHAT_MODULE = "Node机器人";
-    private static final String BOT_DIR_NAME = "screenprobe-nodebot";
+    private static final String BOT_DIR_NAME = "ranmc-toolbox-nodebot";
     private static final DateTimeFormatter LOG_TIME_FORMAT = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss");
     private static final Duration STOP_TIMEOUT = Duration.ofMillis(1500L);
 
@@ -42,7 +42,7 @@ final class NodeBotController {
         }
 
         shutdownHookRegistered = true;
-        Runtime.getRuntime().addShutdownHook(new Thread(NodeBotController::stopQuietly, "screenprobe-nodebot-shutdown"));
+        Runtime.getRuntime().addShutdownHook(new Thread(NodeBotController::stopQuietly, "ranmc-toolbox-nodebot-shutdown"));
     }
 
     static void registerCommands(CommandDispatcher<FabricClientCommandSource> dispatcher) {
@@ -269,7 +269,7 @@ final class NodeBotController {
     }
 
     private static Path resolveLogDirectory(Minecraft client) {
-        return resolveGameDirectory(client).resolve("logs").resolve("screenprobe").resolve("nodebot").toAbsolutePath().normalize();
+        return resolveGameDirectory(client).resolve("logs").resolve("ranmc-toolbox").resolve("nodebot").toAbsolutePath().normalize();
     }
 
     private static Path resolveGameDirectory(Minecraft client) {

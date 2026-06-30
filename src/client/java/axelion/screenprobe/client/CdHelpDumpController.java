@@ -398,7 +398,7 @@ final class CdHelpDumpController {
 
     private static Path writeDump(Minecraft client) {
         try {
-            Path logDir = client.gameDirectory.toPath().resolve("logs").resolve("screenprobe").resolve("cd-help-dump");
+            Path logDir = client.gameDirectory.toPath().resolve("logs").resolve("ranmc-toolbox").resolve("cd-help-dump");
             Files.createDirectories(logDir);
             Path file = logDir.resolve(activeTarget.filePrefix() + "-" + FILE_TIME_FORMAT.format(LocalDateTime.now()) + ".txt");
             Files.write(file, outputLines);

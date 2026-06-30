@@ -238,6 +238,26 @@ final class ScreenProbeInspector {
         List<?> rawSlots = screen.getMenu().slots;
         int playerInventoryStart = Math.max(0, rawSlots.size() - 36);
 
+        if ("net.minecraft.world.inventory.CraftingMenu".equals(screen.getMenu().getClass().getName())) {
+            for (int slotIndex = 0; slotIndex < rawSlots.size(); slotIndex++) {
+                Object rawSlot = rawSlots.get(slotIndex);
+                if (!(rawSlot instanceof net.minecraft.world.inventory.Slot slot)) {
+                    lines.add("slot[" + slotIndex + "]=<non-slot>");
+                    continue;
+                }
+
+                var stack = slot.getItem();
+                String item = stack.isEmpty()
+                        ? "<empty>"
+                        : "\"" + shorten(stack.getHoverName().getString()) + "\" x" + stack.getCount();
+                lines.add("slot[" + slotIndex + "]=" + item
+                        + " x=" + slot.x + " y=" + slot.y
+                        + " containerSlot=" + slot.getContainerSlot());
+            }
+
+            return lines;
+        }
+
         for (int slotIndex = 0; slotIndex < Math.min(rawSlots.size(), playerInventoryStart); slotIndex++) {
             Object rawSlot = rawSlots.get(slotIndex);
             if (!(rawSlot instanceof net.minecraft.world.inventory.Slot slot) || !slot.hasItem()) {

@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
-  "id": "screenprobe",
+  "id": "ranmctoolbox",
   "version": "${version}",
-  "name": "Aknices_QWQ专属端",
-  "description": "Aknices_QWQ专属端：自动收售、自动打龙、自动挖区块与界面调试客户端。",
+  "name": "ranmc: toolbox",
+  "description": "ranmc: toolbox：自动收售、自动下界疣、自动强化与服务器辅助工具箱。",
   "authors": [
     "Aknices_QWQ"
   ],

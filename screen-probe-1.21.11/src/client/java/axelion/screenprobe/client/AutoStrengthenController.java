@@ -16,6 +16,7 @@ import net.minecraft.world.inventory.Slot;
 import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
 import net.minecraft.world.item.TooltipFlag;
 
 import java.io.IOException;
@@ -80,6 +81,7 @@ final class AutoStrengthenController {
     private static boolean pendingClearHadAttributes;
     private static boolean destroyMode;
     private static String destroyTargetLabel = "";
+    private static CraftPlan pendingCraftPlan;
     private static State stateAfterScreenClose = State.IDLE;
     private static String pendingCloseReason = "";
     private static int heldHotbarSlotBeforeClear;
@@ -120,11 +122,6 @@ final class AutoStrengthenController {
                         .then(ClientCommandManager.literal("胸甲")
                                 .executes(command -> {
                                     startDestroyMode(command.getSource().getClient(), "胸甲");
-                                    return 1;
-                                }))
-                        .then(ClientCommandManager.literal("裤子")
-                                .executes(command -> {
-                                    startDestroyMode(command.getSource().getClient(), "裤子");
                                     return 1;
                                 }))
                         .then(ClientCommandManager.literal("镐子")
@@ -194,6 +191,23 @@ final class AutoStrengthenController {
         switch (state) {
             case OPEN_ROOT_MENU -> tickOpenRootMenu(client);
             case WAIT_FOR_SCREEN_CLOSE -> tickWaitForScreenClose(client);
+            case WAIT_FOR_CRAFTING_TABLE -> tickWaitForCraftingTable(client);
+            case READY_TO_CRAFT_TARGET -> {
+                if (client.screen instanceof AbstractContainerScreen<?> containerScreen) {
+                    tickReadyToCraftTarget(client, containerScreen);
+                }
+            }
+            case WAIT_FOR_CRAFT_RESULT -> {
+                if (client.screen instanceof AbstractContainerScreen<?> containerScreen) {
+                    tickWaitForCraftResult(client, containerScreen);
+                }
+            }
+            case WAIT_FOR_CRAFT_TAKE -> {
+                if (client.screen instanceof AbstractContainerScreen<?> containerScreen) {
+                    tickWaitForCraftTake(client, containerScreen);
+                }
+            }
+            case OPEN_STRENGTHEN_AFTER_CRAFT -> tickOpenStrengthenAfterCraft(client);
             case CLICK_EQUIPMENT_CATEGORY -> tickClickMenuItem(client, client.screen,
                     AutoStrengthenConfig.get(client).equipmentCategoryLabel(), State.CLICK_STRENGTHEN_MENU);
             case CLICK_EQUIPMENT_CATEGORY_FOR_CLEAR -> tickClickMenuItem(client, client.screen,
@@ -357,6 +371,7 @@ final class AutoStrengthenController {
         AutoStrengthenConfig.Config config = AutoStrengthenConfig.get(client);
         destroyMode = false;
         destroyTargetLabel = "";
+        pendingCraftPlan = null;
         start(client, requestedRolls, config.clearBeforeStart());
     }
 
@@ -364,13 +379,66 @@ final class AutoStrengthenController {
         AutoStrengthenConfig.Config config = AutoStrengthenConfig.get(client);
         destroyMode = true;
         destroyTargetLabel = normalizeDestroyTargetLabel(part);
+        pendingCraftPlan = CraftPlan.forTarget(destroyTargetLabel);
         if (isClientReady(client) && selectExistingUnstrengthenedTarget(client, destroyTargetLabel)) {
             sendMessage(client, "已在背包找到未强化或强化次数为 0 的 " + destroyTargetLabel + "，优先强化该物品。");
         } else if (isClientReady(client) && client.getConnection() != null) {
-            client.getConnection().sendCommand("wb");
-            sendMessage(client, "背包没有可用的 " + destroyTargetLabel + "，已打开 /wb。自动合成需要工作台界面槽位日志确认后启用。");
+            if (pendingCraftPlan == null) {
+                sendMessage(client, "不支持自动合成 " + destroyTargetLabel + "。支持：剑、镐子、头盔、胸甲、靴子。");
+                return;
+            }
+            startCraftMode(client, config);
+            return;
         }
         start(client, config.defaultRolls(), false);
+    }
+
+    private static void startCraftMode(Minecraft client, AutoStrengthenConfig.Config config) {
+        if (!ScreenProbeGlobalConfig.get(client).enableAutoStrengthen()) {
+            sendMessage(client, "自动强化已在 /autosettings 全局设置中屏蔽。");
+            return;
+        }
+        if (!isClientReady(client)) {
+            sendMessage(client, "现在还不能启动自动合成强化。");
+            return;
+        }
+        if (active) {
+            stop(client, "自动强化重新启动。", true);
+        }
+
+        clearBeforeStartPending = false;
+        insertHeldItemRequested = true;
+        maxRolls = config.defaultRolls();
+        rollsDone = 0;
+        delayTicks = 0;
+        timeoutTicks = TIMEOUT_TICKS;
+        nonStrengthenScreenTicks = 0;
+        lastEvaluation = Evaluation.empty();
+        lastLogPath = null;
+        runLog.clear();
+        runLog.add("# 自动强化记录");
+        runLog.add("startedAt=" + LocalDateTime.now());
+        runLog.add("maxRolls=" + maxRolls);
+        runLog.add("craftMode=true");
+        runLog.add("destroyMode=true");
+        runLog.add("destroyTargetLabel=" + destroyTargetLabel);
+        runLog.add("");
+
+        active = true;
+        if (client.screen != null && !isCraftingScreen(client.screen)) {
+            beginCloseScreen(client, State.WAIT_FOR_CRAFTING_TABLE, "打开工作台");
+            return;
+        }
+        if (isCraftingScreen(client.screen)) {
+            state = State.READY_TO_CRAFT_TARGET;
+            delayTicks = actionDelayTicks(client);
+            return;
+        }
+        client.getConnection().sendCommand("wb");
+        state = State.WAIT_FOR_CRAFTING_TABLE;
+        delayTicks = actionDelayTicks(client);
+        timeoutTicks = TIMEOUT_TICKS;
+        sendMessage(client, "背包没有可用的 " + destroyTargetLabel + "，已打开 /wb 自动合成后强化。");
     }
 
     private static void start(Minecraft client, int requestedRolls, boolean clearBeforeStart) {
@@ -754,6 +822,102 @@ final class AutoStrengthenController {
         timeoutTicks = TIMEOUT_TICKS;
     }
 
+    private static void tickWaitForCraftingTable(Minecraft client) {
+        if (isCraftingScreen(client.screen)) {
+            state = State.READY_TO_CRAFT_TARGET;
+            delayTicks = actionDelayTicks(client);
+            timeoutTicks = TIMEOUT_TICKS;
+            return;
+        }
+        if (client.screen == null && client.getConnection() != null) {
+            client.getConnection().sendCommand("wb");
+            delayTicks = actionDelayTicks(client);
+        }
+    }
+
+    private static void tickReadyToCraftTarget(Minecraft client, AbstractContainerScreen<?> screen) {
+        if (!isCraftingScreen(client.screen)) {
+            stop(client, "请保持打开 /wb 工作台界面，自动合成强化已停止。", true);
+            return;
+        }
+        if (pendingCraftPlan == null) {
+            stop(client, "没有可执行的合成目标。", true);
+            return;
+        }
+
+        clearCraftingGrid(client, screen);
+        if (!ensureStickSupply(client, screen, pendingCraftPlan.sticks())) {
+            stop(client, "缺少木棍，且没有可用原木自动合成木棍。", true);
+            return;
+        }
+        if (!ensureDiamondSupply(client, screen, pendingCraftPlan.diamonds())) {
+            stop(client, "缺少钻石，且没有可用钻石块自动分解。", true);
+            return;
+        }
+        if (!placeCraftPlan(client, screen, pendingCraftPlan)) {
+            stop(client, "材料不足，无法合成 " + pendingCraftPlan.targetLabel() + "。", true);
+            return;
+        }
+
+        runLog.add("craftPlaced=" + pendingCraftPlan.targetLabel());
+        state = State.WAIT_FOR_CRAFT_RESULT;
+        delayTicks = resultDelayTicks(client);
+        timeoutTicks = TIMEOUT_TICKS;
+    }
+
+    private static void tickWaitForCraftResult(Minecraft client, AbstractContainerScreen<?> screen) {
+        if (!isCraftingScreen(client.screen)) {
+            stop(client, "工作台界面已关闭，自动合成强化已停止。", true);
+            return;
+        }
+        Slot output = screen.getMenu().slots.get(0);
+        if (output.getItem().isEmpty()) {
+            return;
+        }
+        if (pendingCraftPlan == null || !matchesDestroyTarget(output.getItem(), pendingCraftPlan.targetLabel())) {
+            stop(client, "工作台输出不是目标装备，自动合成强化已停止。", true);
+            return;
+        }
+        client.gameMode.handleInventoryMouseClick(
+                screen.getMenu().containerId,
+                0,
+                0,
+                ClickType.QUICK_MOVE,
+                client.player
+        );
+        runLog.add("craftTaken=" + output.getItem().getHoverName().getString());
+        state = State.WAIT_FOR_CRAFT_TAKE;
+        delayTicks = resultDelayTicks(client);
+        timeoutTicks = TIMEOUT_TICKS;
+    }
+
+    private static void tickWaitForCraftTake(Minecraft client, AbstractContainerScreen<?> screen) {
+        if (selectExistingUnstrengthenedTarget(client, destroyTargetLabel)) {
+            beginCloseScreen(client, State.OPEN_STRENGTHEN_AFTER_CRAFT, "合成后打开强化");
+            return;
+        }
+        if (screen.getMenu().slots.get(0).getItem().isEmpty()) {
+            return;
+        }
+        timeoutTicks = Math.min(timeoutTicks, 20 * 3);
+    }
+
+    private static void tickOpenStrengthenAfterCraft(Minecraft client) {
+        AutoStrengthenConfig.Config config = AutoStrengthenConfig.get(client);
+        if (client.screen != null) {
+            beginCloseScreen(client, State.OPEN_STRENGTHEN_AFTER_CRAFT, "合成后打开强化");
+            return;
+        }
+
+        pendingCraftPlan = null;
+        insertHeldItemRequested = true;
+        client.getConnection().sendCommand(config.cdCommand());
+        state = State.CLICK_EQUIPMENT_CATEGORY;
+        delayTicks = actionDelayTicks(client);
+        timeoutTicks = TIMEOUT_TICKS;
+        sendMessage(client, "已合成并选中 " + destroyTargetLabel + "，正在打开装备强化。");
+    }
+
     private static void beginCloseScreen(Minecraft client, State nextState, String reason) {
         stateAfterScreenClose = nextState;
         pendingCloseReason = reason;
@@ -947,7 +1111,6 @@ final class AutoStrengthenController {
             case "镐", "稿", "镐子", "稿子", "钻石镐", "钻石镐子", "pickaxe", "diamondpickaxe" -> "钻石镐";
             case "头", "头盔", "钻石头盔", "helmet", "diamondhelmet" -> "钻石头盔";
             case "胸", "胸甲", "钻石胸甲", "chest", "chestplate", "diamondchestplate" -> "钻石胸甲";
-            case "腿", "裤", "裤子", "钻石裤", "钻石裤子", "护腿", "钻石护腿", "leggings", "diamondleggings" -> "钻石护腿";
             case "鞋", "靴子", "钻石靴子", "boots", "diamondboots" -> "钻石靴子";
             default -> value;
         };
@@ -1023,6 +1186,161 @@ final class AutoStrengthenController {
             }
         }
         return !sawStrengthen;
+    }
+
+    private static boolean isCraftingScreen(Screen screen) {
+        return screen instanceof AbstractContainerScreen<?> containerScreen
+                && "net.minecraft.world.inventory.CraftingMenu".equals(containerScreen.getMenu().getClass().getName());
+    }
+
+    private static void clearCraftingGrid(Minecraft client, AbstractContainerScreen<?> screen) {
+        for (int slotIndex = 1; slotIndex <= 9 && slotIndex < screen.getMenu().slots.size(); slotIndex++) {
+            Slot slot = screen.getMenu().slots.get(slotIndex);
+            if (slot.hasItem()) {
+                client.gameMode.handleInventoryMouseClick(
+                        screen.getMenu().containerId,
+                        slotIndex,
+                        0,
+                        ClickType.QUICK_MOVE,
+                        client.player
+                );
+            }
+        }
+    }
+
+    private static boolean ensureStickSupply(Minecraft client, AbstractContainerScreen<?> screen, int neededSticks) {
+        if (neededSticks <= countInventoryItem(client, Items.STICK)) {
+            return true;
+        }
+        if (!craftPlanksFromLog(client, screen)) {
+            return false;
+        }
+        if (!craftSticksFromPlanks(client, screen)) {
+            return false;
+        }
+        return neededSticks <= countInventoryItem(client, Items.STICK);
+    }
+
+    private static boolean ensureDiamondSupply(Minecraft client, AbstractContainerScreen<?> screen, int neededDiamonds) {
+        if (neededDiamonds <= countInventoryItem(client, Items.DIAMOND)) {
+            return true;
+        }
+        int blockSlot = findInventoryMenuSlot(screen, stack -> stack.is(Items.DIAMOND_BLOCK));
+        if (blockSlot < 0) {
+            return false;
+        }
+        clearCraftingGrid(client, screen);
+        moveOneToCraftSlot(client, screen, blockSlot, 1);
+        quickMoveOutput(client, screen);
+        clearCraftingGrid(client, screen);
+        return neededDiamonds <= countInventoryItem(client, Items.DIAMOND);
+    }
+
+    private static boolean craftPlanksFromLog(Minecraft client, AbstractContainerScreen<?> screen) {
+        clearCraftingGrid(client, screen);
+        int logSlot = findInventoryMenuSlot(screen, stack -> isLogItem(stack));
+        if (logSlot < 0) {
+            return false;
+        }
+        moveOneToCraftSlot(client, screen, logSlot, 1);
+        quickMoveOutput(client, screen);
+        clearCraftingGrid(client, screen);
+        return countInventoryItem(client, Items.OAK_PLANKS) > 0 || countInventoryItemByIdSuffix(client, "_planks") > 0;
+    }
+
+    private static boolean craftSticksFromPlanks(Minecraft client, AbstractContainerScreen<?> screen) {
+        clearCraftingGrid(client, screen);
+        int firstPlank = findInventoryMenuSlot(screen, AutoStrengthenController::isPlankItem);
+        if (firstPlank < 0) {
+            return false;
+        }
+        moveOneToCraftSlot(client, screen, firstPlank, 2);
+        int secondPlank = findInventoryMenuSlot(screen, AutoStrengthenController::isPlankItem);
+        if (secondPlank < 0) {
+            return false;
+        }
+        moveOneToCraftSlot(client, screen, secondPlank, 5);
+        quickMoveOutput(client, screen);
+        clearCraftingGrid(client, screen);
+        return countInventoryItem(client, Items.STICK) > 0;
+    }
+
+    private static boolean placeCraftPlan(Minecraft client, AbstractContainerScreen<?> screen, CraftPlan plan) {
+        for (int slotIndex : plan.diamondSlots()) {
+            int source = findInventoryMenuSlot(screen, stack -> stack.is(Items.DIAMOND));
+            if (source < 0) {
+                return false;
+            }
+            moveOneToCraftSlot(client, screen, source, slotIndex);
+        }
+        for (int slotIndex : plan.stickSlots()) {
+            int source = findInventoryMenuSlot(screen, stack -> stack.is(Items.STICK));
+            if (source < 0) {
+                return false;
+            }
+            moveOneToCraftSlot(client, screen, source, slotIndex);
+        }
+        return true;
+    }
+
+    private static void moveOneToCraftSlot(Minecraft client, AbstractContainerScreen<?> screen, int sourceSlot, int craftSlot) {
+        client.gameMode.handleInventoryMouseClick(screen.getMenu().containerId, sourceSlot, 0, ClickType.PICKUP, client.player);
+        client.gameMode.handleInventoryMouseClick(screen.getMenu().containerId, craftSlot, 1, ClickType.PICKUP, client.player);
+        client.gameMode.handleInventoryMouseClick(screen.getMenu().containerId, sourceSlot, 0, ClickType.PICKUP, client.player);
+    }
+
+    private static void quickMoveOutput(Minecraft client, AbstractContainerScreen<?> screen) {
+        client.gameMode.handleInventoryMouseClick(
+                screen.getMenu().containerId,
+                0,
+                0,
+                ClickType.QUICK_MOVE,
+                client.player
+        );
+    }
+
+    private static int findInventoryMenuSlot(AbstractContainerScreen<?> screen, java.util.function.Predicate<ItemStack> predicate) {
+        List<Slot> slots = screen.getMenu().slots;
+        for (int slotIndex = 10; slotIndex < slots.size(); slotIndex++) {
+            ItemStack stack = slots.get(slotIndex).getItem();
+            if (!stack.isEmpty() && predicate.test(stack)) {
+                return slotIndex;
+            }
+        }
+        return -1;
+    }
+
+    private static int countInventoryItem(Minecraft client, Item item) {
+        int count = 0;
+        Inventory inventory = client.player.getInventory();
+        for (int slot = 0; slot < Inventory.INVENTORY_SIZE; slot++) {
+            ItemStack stack = inventory.getItem(slot);
+            if (stack.is(item)) {
+                count += stack.getCount();
+            }
+        }
+        return count;
+    }
+
+    private static int countInventoryItemByIdSuffix(Minecraft client, String suffix) {
+        int count = 0;
+        Inventory inventory = client.player.getInventory();
+        for (int slot = 0; slot < Inventory.INVENTORY_SIZE; slot++) {
+            ItemStack stack = inventory.getItem(slot);
+            if (!stack.isEmpty() && BuiltInRegistries.ITEM.getKey(stack.getItem()).toString().endsWith(suffix)) {
+                count += stack.getCount();
+            }
+        }
+        return count;
+    }
+
+    private static boolean isLogItem(ItemStack stack) {
+        String id = BuiltInRegistries.ITEM.getKey(stack.getItem()).toString();
+        return id.endsWith("_log") || id.endsWith("_stem") || id.endsWith("_wood") || id.endsWith("_hyphae");
+    }
+
+    private static boolean isPlankItem(ItemStack stack) {
+        return BuiltInRegistries.ITEM.getKey(stack.getItem()).toString().endsWith("_planks");
     }
 
     private static Optional<Slot> findStrengthenedItemSlot(AbstractContainerScreen<?> screen) {
@@ -1483,7 +1801,7 @@ final class AutoStrengthenController {
             return null;
         }
         try {
-            Path logDir = client.gameDirectory.toPath().resolve("logs").resolve("screenprobe").resolve("auto-strengthen");
+            Path logDir = client.gameDirectory.toPath().resolve("logs").resolve("ranmc-toolbox").resolve("auto-strengthen");
             Files.createDirectories(logDir);
             Path file = logDir.resolve("auto-strengthen-" + FILE_TIME_FORMAT.format(LocalDateTime.now()) + ".txt");
             Files.write(file, runLog);
@@ -1510,11 +1828,13 @@ final class AutoStrengthenController {
         String prefix = ScreenProbeGlobalConfig.prefix(client, CHAT_MODULE);
         ScreenProbe.LOGGER.info("{} {}", prefix, message);
         if (client != null && client.player != null) {
-            client.player.displayClientMessage(Component.empty()
+            client.player.displayClientMessage(
+                    Component.empty()
                             .append(Component.literal(prefix).withStyle(ChatFormatting.YELLOW, ChatFormatting.BOLD))
                             .append(Component.literal(" ").withStyle(ChatFormatting.GRAY))
-                            .append(Component.literal(message).withStyle(ChatFormatting.AQUA))
-            , false);
+                            .append(Component.literal(message).withStyle(ChatFormatting.AQUA)),
+                    false
+            );
         }
     }
 
@@ -1546,6 +1866,11 @@ final class AutoStrengthenController {
         IDLE,
         OPEN_ROOT_MENU,
         WAIT_FOR_SCREEN_CLOSE,
+        WAIT_FOR_CRAFTING_TABLE,
+        READY_TO_CRAFT_TARGET,
+        WAIT_FOR_CRAFT_RESULT,
+        WAIT_FOR_CRAFT_TAKE,
+        OPEN_STRENGTHEN_AFTER_CRAFT,
         CLICK_EQUIPMENT_CATEGORY,
         CLICK_EQUIPMENT_CATEGORY_FOR_CLEAR,
         CLICK_STRENGTHEN_MENU,
@@ -1569,6 +1894,27 @@ final class AutoStrengthenController {
     }
 
     private record AttributeValue(String name, int value) {
+    }
+
+    private record CraftPlan(String targetLabel, int[] diamondSlots, int[] stickSlots) {
+        static CraftPlan forTarget(String targetLabel) {
+            return switch (targetLabel) {
+                case "钻石剑" -> new CraftPlan(targetLabel, new int[]{2, 5}, new int[]{8});
+                case "钻石镐" -> new CraftPlan(targetLabel, new int[]{1, 2, 3}, new int[]{5, 8});
+                case "钻石头盔" -> new CraftPlan(targetLabel, new int[]{1, 2, 3, 4, 6}, new int[]{});
+                case "钻石胸甲" -> new CraftPlan(targetLabel, new int[]{1, 3, 4, 5, 6, 7, 8, 9}, new int[]{});
+                case "钻石靴子" -> new CraftPlan(targetLabel, new int[]{4, 6, 7, 9}, new int[]{});
+                default -> null;
+            };
+        }
+
+        int diamonds() {
+            return diamondSlots.length;
+        }
+
+        int sticks() {
+            return stickSlots.length;
+        }
     }
 
     private record Evaluation(boolean keep, int damage, int defense, String focusName, int focusValue,
@@ -1619,4 +1965,3 @@ final class AutoStrengthenController {
         }
     }
 }
-

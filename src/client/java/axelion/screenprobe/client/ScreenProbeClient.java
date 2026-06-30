@@ -2326,6 +2326,7 @@ public final class ScreenProbeClient implements ClientModInitializer {
 
     private static void sendFeatureList(Minecraft client) {
         sendMessage(client, ScreenProbeGlobalConfig.BUILD_NOTICE
+                + "\n后续只维护主版本 26.1.2；1.21.11 将不再更新。"
                 + "\n输入 /autohelp 查看功能列表；输入 /autosettings 打开配置。");
     }
 
@@ -2340,6 +2341,7 @@ public final class ScreenProbeClient implements ClientModInitializer {
                 .append(helpButton("Node", "/nodebot status", "/nodebot start|stop|restart|send <消息>"));
         sendMessage(client, message);
         sendMessage(client, "常用：/autosell refill 或 /autosell refill all = 全部补仓售卖；/autosell refill 1000 = 卖够 1000 个；/autosell item 下界疣 = 设置补仓物品。");
+        sendMessage(client, "维护说明：后续只维护主版本 26.1.2；1.21.11 将不再更新。");
     }
 
     private static Component helpButton(String label, String command, String hover) {
@@ -2513,10 +2515,10 @@ public final class ScreenProbeClient implements ClientModInitializer {
 
     private static Path writeInspectionLog(Minecraft client, Screen screen, List<String> lines) {
         try {
-            Path logDir = client.gameDirectory.toPath().resolve("logs").resolve("screenprobe");
+            Path logDir = client.gameDirectory.toPath().resolve("logs").resolve("ranmc-toolbox");
             Files.createDirectories(logDir);
 
-            String fileName = "screenprobe-" + FILE_TIME_FORMAT.format(LocalDateTime.now())
+            String fileName = "ranmc-toolbox-" + FILE_TIME_FORMAT.format(LocalDateTime.now())
                     + "-" + screen.getClass().getSimpleName() + ".log";
             Path logFile = logDir.resolve(fileName);
 

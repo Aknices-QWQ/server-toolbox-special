@@ -1,53 +1,80 @@
-# 【自用】【特供】服务器工具箱
+# ranmc: toolbox
 
-自用 Fabric 客户端工具箱，包含自动售卖、作物仓库补货、下界疣收种、自动强化、补船、村民交易、Node 机器人调用等功能。
+最小的 Fabric 客户端调试模组，用来识别并测试服务器菜单里的输入框。
 
-## 版本
+## 维护策略
 
-- 主线：Minecraft `26.1.2`，Fabric Loader `0.19.2`
-- 移植：Minecraft `1.21.11`，Fabric Loader `0.19.2`
+后续只维护主版本 `26.1.2`。`1.21.11` 移植版将保留为历史构建，不再继续更新功能。
 
-## 常用命令
+## 当前功能
 
-- `/autohelp`：查看可点击帮助入口。
-- `/autosettings`：打开配置界面。
-- `/autosell`：自动售卖当前背包可卖物品。
-- `/autosell refill` 或 `/autosell refill all`：从作物仓库整页取出并循环售卖，直到仓库取不出。
-- `/autosell refill <数量>`：按目标数量循环补仓售卖。
-- `/autosell item <物品>`：设置补仓目标，默认下界疣。
-- `/autosell stop`：停止并清空自动售卖状态。
-- `/autowart`：自动下界疣收种。
-- `/autostrength`：自动强化。
-- `/autostrength craft <剑|镐子|头盔|胸甲|靴子>`：优先强化背包内未强化或强化次数为 0 的目标装备；没有则打开 `/wb` 准备合成。
-- `/autoboat1`：自动往发射器补船。
-- `/nodebot start|stop|restart|status|send <消息>`：管理 Node 机器人。
+- 界面一打开就自动打印当前界面的类名、标题、子控件数量、前几个子控件类型、输入框数量、菜单类名、槽位数量
+- 提供客户端命令 `/autosell`
+- 提供持续监控模式 `/autosell yolo`
+- 提供下界疣自动收种 `/autowart`
+- 提供发射器自动补船 `/autoboat1`
+- 提供 ClickGUI `/clickgui`
+- 提供 Node mineflayer 机器人外部进程管理 `/nodebot`
 
-## 构建
+这个版本优先支持 `EditBox` 驱动的界面，例如常见的：
 
-主线版本：
+- 铁砧输入框
+- 聊天输入框
+- 很多模组自带的文本输入框
 
-```powershell
-.\gradlew.bat build
-```
+## 运行前提
 
-1.21.11 移植版本：
+Fabric 26.1.2 这代按官方文档需要 `JDK 25`。
 
-```powershell
-cd screen-probe-1.21.11
-.\gradlew.bat build
-```
+另外，Fabric 26.1 官方博客建议开发时使用 `Gradle 9.4.0` 左右的版本；如果你用 IntelliJ 直接导入项目，它通常会提示你配置合适的 Gradle JVM。
 
-## Node 机器人
+参考文档：
 
-复制 `.env.example` 为 `.env` 后按需填写：
+- Fabric 26.1.2 开发环境要求：<https://docs.fabricmc.net/develop/getting-started/setting-up>
+- Fabric 26.1.2 推荐版本：<https://fabricmc.net/develop/>
+- Fabric 26.1 迁移说明：<https://docs.fabricmc.net/develop/porting/>
+- Fabric 26.1 博客说明：<https://fabricmc.net/2026/03/14/261.html>
 
-```powershell
-npm install
-npm start
-```
+## 使用方式
 
-不要提交 `.env`、日志、`node_modules` 或个人账号密码。
+1. 用支持 Gradle 的 IDE 打开这个目录
+2. 把 Gradle JVM 设为 `JDK 25`
+3. 如果 IDE 没有自动生成运行配置，执行 Gradle 的 `runClient`
+4. 进服务器后打开目标界面
+5. 模组会在界面打开时自动把探测信息保存到 `.minecraft/logs/ranmc-toolbox/`
+6. 聊天栏只会提示保存的文件名
+7. 把对应的 `ranmc-toolbox-*.log` 内容发给我
+8. 输入 `/autosell` 会发送 `/sell`，然后自动点击背包中存在的可卖物品并完成确认
+9. 输入 `/autosell yolo` 会在背包中检测到超过一组可卖物品时自动售卖
+10. 输入 `/autowart start` 会进入可见范围收种模式，扫描玩家周围合法距离内所有可见灵魂沙/下界疣；只收成熟下界疣，空灵魂沙会补种，收种不会强制扭头或移动；缺下界疣时会从背包或 `/cd` 作物仓库一次补多组
+11. 输入 `/autowart radius 4` 可设置扫描半径，合法范围 1-4；输入 `/autowart speed 3` 可设置每 tick 最大操作数，范围 1-5；输入 `/autowart minecart on` 可在乘坐矿车时自动按住前进防止停下
+12. 输入 `/autoboat1` 会自动扫描附近够得到的发射器，里面已有船就跳过，没有船就从背包补 1 艘；再次输入可停止
+13. 输入 `/nodebot start` 会从当前游戏实例版本目录的 `ranmc-toolbox-nodebot` 副本启动 `node mc-bot.js`；`/nodebot stop` 停止，`/nodebot restart` 重启，`/nodebot status` 查看副本目录和日志
+14. 输入 `/clickgui` 可打开图形面板，直接开关自动下界疣、矿车防停、自动补船、Node 机器人，并调整下界疣扫描半径和操作速度
+15. 如果需要下一步自动输入或自动点击，再把界面截图一起发给我
 
-## 说明
+## Node 机器人副本
 
-本项目为特定服务器自用工具箱。使用前请确认符合服务器规则与本地环境配置。
+Fabric 端不会直接指向本仓库工作区。实际启动目录为当前游戏实例/版本目录里的 `ranmc-toolbox-nodebot`，其中需要有：
+
+- `mc-bot.js`
+- `package.json`
+- `package-lock.json`
+- `node_modules`
+- 可选 `.env`
+
+启动时会设置 `MC_HEADLESS=true`，日志写到当前游戏目录的 `logs/ranmc-toolbox/nodebot/`。
+
+## 当前限制
+
+- 这个工作区里还没有 `gradlew` / `gradlew.bat` / `gradle-wrapper.jar`
+- 我尝试联网拉官方模板和 wrapper，但当前网络连接被重置，没法在这里补齐
+- 所以这份代码目前更适合直接用 IDE 导入，或者你本机有可用的 Gradle 之后再生成 wrapper
+
+## 下一步
+
+拿到自动探测日志后，就可以继续针对具体界面写：
+
+- 自动填写指定文本
+- 自动点击确认按钮或槽位
+- 按服务器菜单流程串联后续动作

@@ -14,7 +14,7 @@ loom {
     splitEnvironmentSourceSets()
 
     mods {
-        "screenprobe" {
+        "ranmctoolbox" {
             sourceSet sourceSets.main
             sourceSet sourceSets.client
         }

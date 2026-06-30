@@ -9,4 +9,4 @@ pluginManagement {
     }
 }
 
-rootProject.name = "screen-probe"
+rootProject.name = "ranmc-toolbox"

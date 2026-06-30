@@ -15,8 +15,8 @@ import java.util.regex.Pattern;
 
 final class ScreenProbeGlobalConfig {
     static final String BRAND = "【特供】";
-    static final String BUILD_NOTICE = "构建版本：2026-06-30 DEV build 仅供内部使用 严禁截图严禁外传";
-    private static final String FILE_NAME = "screenprobe-global.properties";
+    static final String BUILD_NOTICE = "构建版本：2026-06-30 DEV build 仅供内部使用 严禁截图严禁外传 1.21.11历史版本，不再更新；后续仅维护26.1.2";
+    private static final String FILE_NAME = "ranmc-toolbox-global.properties";
     private static final Pattern TPS_PATTERN = Pattern.compile("([0-9]+(?:\\.[0-9]+)?)\\s*/\\s*20\\.00");
     private static final int TPS_QUERY_INTERVAL_TICKS = 20 * 30;
     private static Config values = Config.defaults();
