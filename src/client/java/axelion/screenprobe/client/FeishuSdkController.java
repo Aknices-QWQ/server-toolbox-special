@@ -2,13 +2,21 @@ package axelion.screenprobe.client;
 
 import axelion.screenprobe.ScreenProbe;
 import com.lark.oapi.event.EventDispatcher;
+import com.lark.oapi.service.im.ImService;
+import com.lark.oapi.service.im.v1.model.EventMessage;
+import com.lark.oapi.service.im.v1.model.P2MessageReceiveV1;
 import com.lark.oapi.ws.Client;
 import net.minecraft.ChatFormatting;
 import net.minecraft.client.Minecraft;
 import net.minecraft.network.chat.Component;
 
+import java.util.Locale;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
 final class FeishuSdkController {
     private static final String CHAT_MODULE = "飞书";
+    private static final Pattern TEXT_CONTENT_PATTERN = Pattern.compile("\"text\"\\s*:\\s*\"((?:\\\\.|[^\"])*)\"");
     private static Client wsClient;
     private static boolean wsRunning;
 
@@ -41,7 +49,14 @@ final class FeishuSdkController {
         stopLongConnection(client, false);
         Thread thread = new Thread(() -> {
             try {
-                EventDispatcher dispatcher = EventDispatcher.newBuilder("", "").build();
+                EventDispatcher dispatcher = EventDispatcher.newBuilder("", "")
+                        .onP2MessageReceiveV1(new ImService.P2MessageReceiveV1Handler() {
+                            @Override
+                            public void handle(P2MessageReceiveV1 event) {
+                                handleMessageEvent(client, event);
+                            }
+                        })
+                        .build();
                 wsClient = new Client.Builder(config.feishuAppId(), config.feishuAppSecret())
                         .eventHandler(dispatcher)
                         .autoReconnect(true)
@@ -89,6 +104,88 @@ final class FeishuSdkController {
                 && !config.feishuAppSecret().isBlank()
                 && !config.feishuReceiveIdType().isBlank()
                 && !config.feishuReceiveId().isBlank();
+    }
+
+    private static void handleMessageEvent(Minecraft client, P2MessageReceiveV1 event) {
+        if (client == null || event == null || event.getEvent() == null) {
+            return;
+        }
+        EventMessage message = event.getEvent().getMessage();
+        if (message == null || message.getMessageType() == null || !"text".equalsIgnoreCase(message.getMessageType())) {
+            return;
+        }
+        String text = extractText(message.getContent());
+        if (text.isBlank()) {
+            return;
+        }
+        ScreenProbe.LOGGER.info("Feishu command received: {}", text);
+        client.execute(() -> handleRemoteCommand(client, text));
+    }
+
+    private static void handleRemoteCommand(Minecraft client, String text) {
+        String normalized = normalize(text);
+        if (normalized.equals("autominediamond") || normalized.contains("挖钻石") || normalized.contains("钻石挖矿")) {
+            AutoMineController.startDiamondFromRemote(client);
+            reply(client, "已执行远程指令：自动挖钻石。");
+            return;
+        }
+        if (normalized.equals("autominedebris") || normalized.contains("挖残骸") || normalized.contains("远古残骸")) {
+            AutoMineController.startDebrisFromRemote(client);
+            reply(client, "已执行远程指令：自动挖残骸。");
+            return;
+        }
+        if (normalized.equals("autominenetherite") || normalized.contains("挖下界合金")) {
+            AutoMineController.startDebrisFromRemote(client);
+            reply(client, "已执行远程指令：自动挖残骸。");
+            return;
+        }
+        if (normalized.equals("autominestop") || normalized.contains("停止挖矿") || normalized.contains("关闭挖矿")) {
+            AutoMineController.stopFromRemote(client);
+            reply(client, "已执行远程指令：停止自动挖矿。");
+            return;
+        }
+        if (normalized.equals("autominestatus") || normalized.contains("挖矿状态")) {
+            AutoMineController.statusFromRemote(client);
+            reply(client, "已执行远程指令：查询自动挖矿状态。");
+            return;
+        }
+        if (normalized.equals("autominehelp") || normalized.contains("挖矿帮助")) {
+            reply(client, "飞书控制自动挖矿：\nautomine diamond\nautomine debris\nautomine stop\nautomine status");
+        }
+    }
+
+    private static void reply(Minecraft client, String text) {
+        AutoStrengthenConfig.Config config = AutoStrengthenConfig.get(client);
+        if (isMessageConfigReady(config)) {
+            AutoStrengthenController.sendFeishuTextMessage(config, text);
+        }
+        sendMessage(client, text);
+    }
+
+    private static String extractText(String content) {
+        if (content == null || content.isBlank()) {
+            return "";
+        }
+        Matcher matcher = TEXT_CONTENT_PATTERN.matcher(content);
+        if (matcher.find()) {
+            return unescapeJson(matcher.group(1)).trim();
+        }
+        return content.trim();
+    }
+
+    private static String unescapeJson(String value) {
+        return value.replace("\\n", "\n")
+                .replace("\\\"", "\"")
+                .replace("\\\\", "\\");
+    }
+
+    private static String normalize(String text) {
+        return text == null ? "" : text.replaceAll("§.", "")
+                .replaceAll("\\s+", "")
+                .replace("/", "")
+                .replace("_", "")
+                .replace("-", "")
+                .toLowerCase(Locale.ROOT);
     }
 
     private static void sendMessage(Minecraft client, String message) {

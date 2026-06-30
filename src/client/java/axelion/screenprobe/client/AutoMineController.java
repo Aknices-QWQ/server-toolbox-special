@@ -81,6 +81,7 @@ final class AutoMineController {
     private static int tempCurrentBackpackIndex;
     private static int tempMovedStacks;
     private static int tempAttempts;
+    private static int shulkerPlaceMinDistance;
     private static boolean waitingAfterDeath;
     private static boolean storeMiningActive;
     private static boolean temporaryInventoryPrepared;
@@ -217,6 +218,24 @@ final class AutoMineController {
         sendMessage(client, "已清空下界地标完成标记。");
     }
 
+    static void startDiamondFromRemote(Minecraft client) {
+        start(client, MineMode.DIAMOND);
+    }
+
+    static void startDebrisFromRemote(Minecraft client) {
+        start(client, MineMode.DEBRIS);
+    }
+
+    static void stopFromRemote(Minecraft client) {
+        stop(client, "飞书远程指令：自动挖矿已停止。", true);
+    }
+
+    static void statusFromRemote(Minecraft client) {
+        sendStatus(client);
+        sendFeishu(client, "自动挖矿状态：" + state + " | 启用 " + active + " | 模式 " + mode.label()
+                + " | 目标矿物 " + (isClientReady(client) ? countTargetOre(client) : 0));
+    }
+
     private static void start(Minecraft client, MineMode requestedMode) {
         if (!isClientReady(client)) {
             sendMessage(client, "现在还不能启动自动挖矿。");
@@ -319,7 +338,7 @@ final class AutoMineController {
             retryNextTempBackpack(client, "没有确认拿到 临时背包" + tempCurrentBackpackIndex);
             return;
         }
-        Optional<BlockPos> placePos = findShulkerPlacementPos(client);
+        Optional<BlockPos> placePos = findShulkerPlacementPos(client, shulkerPlaceMinDistance);
         if (placePos.isEmpty()) {
             stop(client, "附近没有可安全放置临时潜影盒的位置，自动挖矿已停止。", true);
             return;
@@ -330,6 +349,7 @@ final class AutoMineController {
         }
         storeShulkerPos = placePos.get();
         placeShulker(client, storeShulkerPos);
+        shulkerPlaceMinDistance = 0;
         state = State.OPEN_TEMP_BACKPACK;
         delayTicks = MENU_DELAY_TICKS * 2;
         timeoutTicks = STORE_SHULKER_TIMEOUT_TICKS;
@@ -348,6 +368,9 @@ final class AutoMineController {
             return;
         }
         if (timeoutTicks <= 0) {
+            if (retryPlaceFurther(client, State.PLACE_TEMP_BACKPACK)) {
+                return;
+            }
             retryNextTempBackpack(client, "临时背包" + tempCurrentBackpackIndex + " 未成功放置");
         }
     }
@@ -614,7 +637,7 @@ final class AutoMineController {
             retryNextBackpack(client, "没有确认拿到 背包" + storeCurrentBackpackIndex);
             return;
         }
-        Optional<BlockPos> placePos = findShulkerPlacementPos(client);
+        Optional<BlockPos> placePos = findShulkerPlacementPos(client, shulkerPlaceMinDistance);
         if (placePos.isEmpty()) {
             stop(client, "附近没有可安全放置潜影盒的位置，自动挖矿已停止。", true);
             return;
@@ -625,6 +648,7 @@ final class AutoMineController {
         }
         storeShulkerPos = placePos.get();
         placeShulker(client, storeShulkerPos);
+        shulkerPlaceMinDistance = 0;
         state = State.OPEN_PLACED_BACKPACK;
         delayTicks = MENU_DELAY_TICKS * 2;
         timeoutTicks = STORE_SHULKER_TIMEOUT_TICKS;
@@ -643,6 +667,9 @@ final class AutoMineController {
             return;
         }
         if (timeoutTicks <= 0) {
+            if (retryPlaceFurther(client, State.PLACE_BACKPACK_FOR_STORE)) {
+                return;
+            }
             retryNextBackpack(client, "背包" + storeCurrentBackpackIndex + " 未成功放置");
         }
     }
@@ -1248,24 +1275,45 @@ final class AutoMineController {
         }
     }
 
-    private static Optional<BlockPos> findShulkerPlacementPos(Minecraft client) {
+    private static Optional<BlockPos> findShulkerPlacementPos(Minecraft client, int minDistance) {
         BlockPos base = client.player.blockPosition();
-        for (BlockPos candidate : List.of(
-                base.above(),
-                base.relative(Direction.NORTH),
-                base.relative(Direction.SOUTH),
-                base.relative(Direction.EAST),
-                base.relative(Direction.WEST),
-                base.relative(Direction.NORTH).above(),
-                base.relative(Direction.SOUTH).above(),
-                base.relative(Direction.EAST).above(),
-                base.relative(Direction.WEST).above()
-        )) {
-            if (canPlaceShulkerAt(client, candidate)) {
-                return Optional.of(candidate.immutable());
+        for (int distance = Math.max(0, minDistance); distance <= 4; distance++) {
+            if (distance == 0) {
+                BlockPos candidate = base.above();
+                if (canPlaceShulkerAt(client, candidate)) {
+                    return Optional.of(candidate.immutable());
+                }
+                continue;
+            }
+            for (int dx = -distance; dx <= distance; dx++) {
+                for (int dz = -distance; dz <= distance; dz++) {
+                    if (Math.max(Math.abs(dx), Math.abs(dz)) != distance) {
+                        continue;
+                    }
+                    BlockPos ground = base.offset(dx, 0, dz);
+                    for (BlockPos candidate : List.of(ground, ground.above())) {
+                        if (canPlaceShulkerAt(client, candidate)) {
+                            return Optional.of(candidate.immutable());
+                        }
+                    }
+                }
             }
         }
         return Optional.empty();
+    }
+
+    private static boolean retryPlaceFurther(Minecraft client, State retryState) {
+        shulkerPlaceMinDistance++;
+        if (shulkerPlaceMinDistance > 4) {
+            shulkerPlaceMinDistance = 0;
+            return false;
+        }
+        storeShulkerPos = null;
+        sendMessage(client, "潜影盒放置未确认，尝试放远一点（距离 " + shulkerPlaceMinDistance + "）。");
+        state = retryState;
+        delayTicks = MENU_DELAY_TICKS;
+        timeoutTicks = TIMEOUT_TICKS;
+        return true;
     }
 
     private static boolean canPlaceShulkerAt(Minecraft client, BlockPos pos) {
@@ -1392,6 +1440,7 @@ final class AutoMineController {
         tempCurrentBackpackIndex = 0;
         tempMovedStacks = 0;
         tempAttempts = 0;
+        shulkerPlaceMinDistance = 0;
         nextStateAfterTemporaryPrepare = State.IDLE;
         resetTempPlacedState();
     }
