@@ -9,8 +9,11 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.screens.DeathScreen;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.chat.Component;
+import net.minecraft.world.InteractionHand;
 import net.minecraft.world.inventory.ContainerInput;
 import net.minecraft.world.inventory.Slot;
 import net.minecraft.world.entity.player.Inventory;
@@ -18,6 +21,10 @@ import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.item.TooltipFlag;
+import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.ShulkerBoxBlock;
+import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.phys.Vec3;
 
 import java.util.List;
 import java.util.Locale;
@@ -37,6 +44,7 @@ final class AutoMineController {
     private static final int INVENTORY_FULL_THRESHOLD_EMPTY_SLOTS = 3;
     private static final int PICKAXE_REPAIR_DAMAGE_THRESHOLD = 250;
     private static final int MAX_BACKPACK_INDEX = 100;
+    private static final int STORE_SHULKER_TIMEOUT_TICKS = 20 * 12;
     private static final Pattern BACKPACK_NAME_PATTERN = Pattern.compile("背包(\\d+)");
     private static final Set<String> DIAMOND_KEEP_IDS = Set.of(
             "minecraft:diamond_ore",
@@ -65,7 +73,13 @@ final class AutoMineController {
     private static int storeBackpackNextIndex = 1;
     private static int storeCurrentBackpackIndex;
     private static int storeAttempts;
+    private static int storeMovedAmount;
+    private static int storePickupTimeoutTicks;
+    private static int storeMiningTicks;
     private static boolean waitingAfterDeath;
+    private static boolean storeMiningActive;
+    private static BlockPos storeShulkerPos;
+    private static BlockPos storeMineTarget;
     private static String lastDeathMessage = "";
 
     private AutoMineController() {
@@ -148,9 +162,13 @@ final class AutoMineController {
             case START_BARITONE -> startBaritoneMine(client);
             case MINING -> tickMining(client);
             case OPEN_EC_FOR_STORE -> tickOpenEcForStore(client);
-            case CLICK_BACKPACK_FOR_STORE -> tickClickBackpackForStore(client);
+            case TAKE_BACKPACK_FROM_EC -> tickTakeBackpackFromEc(client);
+            case PLACE_BACKPACK_FOR_STORE -> tickPlaceBackpackForStore(client);
+            case OPEN_PLACED_BACKPACK -> tickOpenPlacedBackpack(client);
             case STORE_ORES_IN_BACKPACK -> tickStoreOresInBackpack(client);
-            case VERIFY_BACKPACK_STORE -> tickVerifyBackpackStore(client);
+            case PICKUP_STORED_BACKPACK -> tickPickupStoredBackpack(client);
+            case OPEN_EC_FOR_RETURN -> tickOpenEcForReturn(client);
+            case RETURN_BACKPACK_TO_EC -> tickReturnBackpackToEc(client);
             case REPAIR_PICKAXE -> tickRepairPickaxe(client);
             case WAIT_AFTER_DEATH -> tickWaitAfterDeath(client);
             case IDLE -> {
@@ -375,24 +393,25 @@ final class AutoMineController {
         storeBackpackNextIndex = 1;
         storeCurrentBackpackIndex = 0;
         storeAttempts = 0;
+        storeMovedAmount = 0;
         state = State.OPEN_EC_FOR_STORE;
         delayTicks = MENU_DELAY_TICKS;
         timeoutTicks = TIMEOUT_TICKS;
-        sendMessage(client, "背包接近满，正在打开 /ec 存入目标矿物。当前 " + oreCount + " 个。");
+        sendMessage(client, "背包接近满，正在打开 /ec 取出背包潜影盒存矿。当前 " + oreCount + " 个。");
     }
 
     private static void tickOpenEcForStore(Minecraft client) {
         closeScreenIfNeeded(client);
         client.getConnection().sendCommand("ec");
-        state = State.CLICK_BACKPACK_FOR_STORE;
+        state = State.TAKE_BACKPACK_FROM_EC;
         delayTicks = MENU_DELAY_TICKS;
         timeoutTicks = TIMEOUT_TICKS;
     }
 
-    private static void tickClickBackpackForStore(Minecraft client) {
+    private static void tickTakeBackpackFromEc(Minecraft client) {
         if (!(client.screen instanceof AbstractContainerScreen<?> screen)) {
             if (timeoutTicks <= 0) {
-                stop(client, "等待 /ec 背包菜单超时，自动挖矿已停止。", true);
+                stop(client, "等待 /ec 末影箱超时，自动挖矿已停止。", true);
             }
             return;
         }
@@ -404,44 +423,152 @@ final class AutoMineController {
         storeCurrentBackpackIndex = backpack.number;
         storeBackpackNextIndex = backpack.number + 1;
         storeAttempts++;
-        clickContainerSlot(client, screen, backpack.slotIndex, 0, ContainerInput.PICKUP);
-        state = State.STORE_ORES_IN_BACKPACK;
+        clickContainerSlot(client, screen, backpack.slotIndex, 0, ContainerInput.QUICK_MOVE);
+        closeScreenIfNeeded(client);
+        state = State.PLACE_BACKPACK_FOR_STORE;
         delayTicks = MENU_DELAY_TICKS;
         timeoutTicks = TIMEOUT_TICKS;
+        sendMessage(client, "已从 /ec 取出 背包" + storeCurrentBackpackIndex + "，准备放置存矿。");
+    }
+
+    private static void tickPlaceBackpackForStore(Minecraft client) {
+        if (!hasBackpackShulkerInInventory(client, storeCurrentBackpackIndex)) {
+            retryNextBackpack(client, "没有确认拿到 背包" + storeCurrentBackpackIndex);
+            return;
+        }
+        Optional<BlockPos> placePos = findShulkerPlacementPos(client);
+        if (placePos.isEmpty()) {
+            stop(client, "附近没有可安全放置潜影盒的位置，自动挖矿已停止。", true);
+            return;
+        }
+        if (!selectOrMoveToHotbar(client, stack -> isBackpackShulkerStack(stack, storeCurrentBackpackIndex))) {
+            retryNextBackpack(client, "无法把 背包" + storeCurrentBackpackIndex + " 移到热键栏");
+            return;
+        }
+        storeShulkerPos = placePos.get();
+        placeShulker(client, storeShulkerPos);
+        state = State.OPEN_PLACED_BACKPACK;
+        delayTicks = MENU_DELAY_TICKS * 2;
+        timeoutTicks = STORE_SHULKER_TIMEOUT_TICKS;
+    }
+
+    private static void tickOpenPlacedBackpack(Minecraft client) {
+        if (storeShulkerPos == null) {
+            retryNextBackpack(client, "潜影盒位置丢失");
+            return;
+        }
+        if (client.level.getBlockState(storeShulkerPos).getBlock() instanceof ShulkerBoxBlock) {
+            openPlacedShulker(client, storeShulkerPos);
+            state = State.STORE_ORES_IN_BACKPACK;
+            delayTicks = MENU_DELAY_TICKS;
+            timeoutTicks = STORE_SHULKER_TIMEOUT_TICKS;
+            return;
+        }
+        if (timeoutTicks <= 0) {
+            retryNextBackpack(client, "背包" + storeCurrentBackpackIndex + " 未成功放置");
+        }
     }
 
     private static void tickStoreOresInBackpack(Minecraft client) {
         if (!(client.screen instanceof AbstractContainerScreen<?> screen)) {
             if (timeoutTicks <= 0) {
-                retryNextBackpack(client, "等待背包" + storeCurrentBackpackIndex + "打开超时");
+                retryCurrentPlacedBackpackPickup(client, "等待背包" + storeCurrentBackpackIndex + "打开超时");
             }
             return;
         }
+        int before = countTargetOre(client);
         quickMoveTargetOresIntoOpenContainer(client, screen);
-        state = State.VERIFY_BACKPACK_STORE;
+        closeScreenIfNeeded(client);
+        int after = countTargetOre(client);
+        storeMovedAmount = Math.max(0, before - after);
+        if (storeMovedAmount > 0) {
+            pointStoredOreCount += storeMovedAmount;
+            lastOreCount = after;
+        }
+        beginPickupStoredBackpack(client);
+    }
+
+    private static void beginPickupStoredBackpack(Minecraft client) {
+        state = State.PICKUP_STORED_BACKPACK;
+        storePickupTimeoutTicks = STORE_SHULKER_TIMEOUT_TICKS;
+        storeMiningActive = false;
+        storeMiningTicks = 0;
+        delayTicks = MENU_DELAY_TICKS;
+    }
+
+    private static void tickPickupStoredBackpack(Minecraft client) {
+        closeScreenIfNeeded(client);
+        if (storeShulkerPos == null || !(client.level.getBlockState(storeShulkerPos).getBlock() instanceof ShulkerBoxBlock)) {
+            clearStoreMining(client);
+            if (hasBackpackShulkerInInventory(client, storeCurrentBackpackIndex)) {
+                state = State.OPEN_EC_FOR_RETURN;
+                delayTicks = MENU_DELAY_TICKS;
+                timeoutTicks = TIMEOUT_TICKS;
+                return;
+            }
+            if (storePickupTimeoutTicks-- <= 0) {
+                stop(client, "背包" + storeCurrentBackpackIndex + " 已挖掉但未进入背包，请手动确认掉落物。", true);
+            }
+            return;
+        }
+        if (storePickupTimeoutTicks-- <= 0) {
+            clearStoreMining(client);
+            stop(client, "挖回 背包" + storeCurrentBackpackIndex + " 超时，请手动确认潜影盒位置。", true);
+            return;
+        }
+        if (!selectBestPickaxe(client)) {
+            stop(client, "没有合格镐子挖回 背包" + storeCurrentBackpackIndex + "，自动挖矿已停止。", true);
+            return;
+        }
+        mineBlock(client, storeShulkerPos);
+    }
+
+    private static void tickOpenEcForReturn(Minecraft client) {
+        if (!hasBackpackShulkerInInventory(client, storeCurrentBackpackIndex)) {
+            if (storeMovedAmount > 0) {
+                sendMessage(client, "已存入 " + storeMovedAmount + " 个矿物，但未确认 背包" + storeCurrentBackpackIndex + " 回到背包，请手动检查。");
+            }
+            stop(client, "未检测到需要放回 /ec 的 背包" + storeCurrentBackpackIndex + "，自动挖矿已停止。", true);
+            return;
+        }
+        closeScreenIfNeeded(client);
+        client.getConnection().sendCommand("ec");
+        state = State.RETURN_BACKPACK_TO_EC;
         delayTicks = MENU_DELAY_TICKS;
         timeoutTicks = TIMEOUT_TICKS;
     }
 
-    private static void tickVerifyBackpackStore(Minecraft client) {
-        int after = countTargetOre(client);
-        if (after < storeOreCountBefore) {
-            int moved = storeOreCountBefore - after;
-            pointStoredOreCount += moved;
-            lastOreCount = after;
-            closeScreenIfNeeded(client);
-            sendMessage(client, "已通过 /ec 存入 背包" + storeCurrentBackpackIndex + "：" + moved + " 个目标矿物，继续挖矿。");
-            resetStoreState();
-            state = State.START_BARITONE;
+    private static void tickReturnBackpackToEc(Minecraft client) {
+        if (!(client.screen instanceof AbstractContainerScreen<?> screen)) {
+            if (timeoutTicks <= 0) {
+                stop(client, "等待 /ec 放回 背包" + storeCurrentBackpackIndex + " 超时，自动挖矿已停止。", true);
+            }
+            return;
+        }
+        int before = countBackpackShulkerInInventory(client, storeCurrentBackpackIndex);
+        quickMoveBackpackShulkerIntoOpenContainer(client, screen, storeCurrentBackpackIndex);
+        closeScreenIfNeeded(client);
+        int after = countBackpackShulkerInInventory(client, storeCurrentBackpackIndex);
+        if (after < before) {
+            if (storeMovedAmount > 0) {
+                sendMessage(client, "已存入 背包" + storeCurrentBackpackIndex + "：" + storeMovedAmount + " 个目标矿物，并放回 /ec。");
+                resetStoreState();
+                state = State.START_BARITONE;
+            } else {
+                sendMessage(client, "背包" + storeCurrentBackpackIndex + " 没有接收矿物，已放回 /ec，尝试下一个背包。");
+                resetPlacedStoreState();
+                state = State.OPEN_EC_FOR_STORE;
+            }
             delayTicks = MENU_DELAY_TICKS;
             timeoutTicks = TIMEOUT_TICKS;
             return;
         }
-        retryNextBackpack(client, "背包" + storeCurrentBackpackIndex + " 未接收目标矿物");
+        stop(client, "没有确认 背包" + storeCurrentBackpackIndex + " 放回 /ec，自动挖矿已停止。", true);
     }
 
     private static void retryNextBackpack(Minecraft client, String reason) {
         closeScreenIfNeeded(client);
+        clearStoreMining(client);
         if (storeAttempts >= MAX_BACKPACK_INDEX || storeBackpackNextIndex > MAX_BACKPACK_INDEX) {
             stop(client, reason + "，已尝试到 背包" + Math.min(storeBackpackNextIndex - 1, MAX_BACKPACK_INDEX) + "，自动挖矿已停止。", true);
             return;
@@ -450,6 +577,12 @@ final class AutoMineController {
         state = State.OPEN_EC_FOR_STORE;
         delayTicks = MENU_DELAY_TICKS;
         timeoutTicks = TIMEOUT_TICKS;
+    }
+
+    private static void retryCurrentPlacedBackpackPickup(Minecraft client, String reason) {
+        sendMessage(client, reason + "，先挖回并放回 /ec。");
+        storeMovedAmount = 0;
+        beginPickupStoredBackpack(client);
     }
 
     private static void tickRepairPickaxe(Minecraft client) {
@@ -703,6 +836,33 @@ final class AutoMineController {
                 || (mode == MineMode.DEBRIS && DEBRIS_KEEP_IDS.contains(id));
     }
 
+    private static boolean isBackpackShulkerStack(ItemStack stack, int number) {
+        if (stack == null || stack.isEmpty()) {
+            return false;
+        }
+        String id = BuiltInRegistries.ITEM.getKey(stack.getItem()).toString();
+        if (!id.contains("shulker_box")) {
+            return false;
+        }
+        String text = normalize(collectText(Minecraft.getInstance(), stack));
+        return text.contains("背包" + number) && !text.contains("临时背包");
+    }
+
+    private static boolean hasBackpackShulkerInInventory(Minecraft client, int number) {
+        return countBackpackShulkerInInventory(client, number) > 0;
+    }
+
+    private static int countBackpackShulkerInInventory(Minecraft client, int number) {
+        int count = 0;
+        Inventory inventory = client.player.getInventory();
+        for (int slot = 0; slot < Inventory.INVENTORY_SIZE; slot++) {
+            if (isBackpackShulkerStack(inventory.getItem(slot), number)) {
+                count += inventory.getItem(slot).getCount();
+            }
+        }
+        return count;
+    }
+
     private static int quickMoveTargetOresIntoOpenContainer(Minecraft client, AbstractContainerScreen<?> screen) {
         int moved = 0;
         List<Slot> slots = screen.getMenu().slots;
@@ -720,6 +880,22 @@ final class AutoMineController {
             clickContainerSlot(client, screen, slotIndex, 0, ContainerInput.QUICK_MOVE);
         }
         return moved;
+    }
+
+    private static void quickMoveBackpackShulkerIntoOpenContainer(Minecraft client, AbstractContainerScreen<?> screen, int number) {
+        List<Slot> slots = screen.getMenu().slots;
+        int playerInventoryStart = Math.max(0, slots.size() - 36);
+        for (int slotIndex = playerInventoryStart; slotIndex < slots.size(); slotIndex++) {
+            Slot slot = slots.get(slotIndex);
+            if (slot == null || !slot.hasItem() || !slot.isActive()) {
+                continue;
+            }
+            if (!isBackpackShulkerStack(slot.getItem(), number)) {
+                continue;
+            }
+            clickContainerSlot(client, screen, slotIndex, 0, ContainerInput.QUICK_MOVE);
+            return;
+        }
     }
 
     private static BackpackSlot findBackpackSlot(AbstractContainerScreen<?> screen, int minIndex) {
@@ -757,11 +933,135 @@ final class AutoMineController {
         }
     }
 
+    private static Optional<BlockPos> findShulkerPlacementPos(Minecraft client) {
+        BlockPos base = client.player.blockPosition();
+        for (BlockPos candidate : List.of(
+                base.above(),
+                base.relative(Direction.NORTH),
+                base.relative(Direction.SOUTH),
+                base.relative(Direction.EAST),
+                base.relative(Direction.WEST),
+                base.relative(Direction.NORTH).above(),
+                base.relative(Direction.SOUTH).above(),
+                base.relative(Direction.EAST).above(),
+                base.relative(Direction.WEST).above()
+        )) {
+            if (canPlaceShulkerAt(client, candidate)) {
+                return Optional.of(candidate.immutable());
+            }
+        }
+        return Optional.empty();
+    }
+
+    private static boolean canPlaceShulkerAt(Minecraft client, BlockPos pos) {
+        if (client.player.getEyePosition().distanceToSqr(pos.getCenter()) > 25.0D) {
+            return false;
+        }
+        if (!client.level.getBlockState(pos).isAir() || !client.level.getFluidState(pos).isEmpty()) {
+            return false;
+        }
+        if (!client.level.getBlockState(pos.above()).isAir()) {
+            return false;
+        }
+        return client.level.getBlockState(pos.below()).blocksMotion();
+    }
+
+    private static void placeShulker(Minecraft client, BlockPos targetPos) {
+        BlockPos supportPos = targetPos.below();
+        GroundMovementController.faceBlockCenter(client, supportPos);
+        BlockHitResult hitResult = new BlockHitResult(supportPos.getCenter().add(0.0D, 0.5D, 0.0D), Direction.UP, supportPos, false);
+        client.gameMode.useItemOn(client.player, InteractionHand.MAIN_HAND, hitResult);
+        client.player.swing(InteractionHand.MAIN_HAND);
+    }
+
+    private static void openPlacedShulker(Minecraft client, BlockPos shulkerPos) {
+        GroundMovementController.faceBlockCenter(client, shulkerPos);
+        Vec3 center = shulkerPos.getCenter();
+        Vec3 playerPos = client.player.position();
+        Direction side = Direction.getApproximateNearest(
+                playerPos.x - center.x,
+                playerPos.y - center.y,
+                playerPos.z - center.z
+        );
+        if (side == Direction.UP || side == Direction.DOWN) {
+            side = Direction.NORTH;
+        }
+        BlockHitResult hitResult = new BlockHitResult(center, side, shulkerPos, false);
+        client.gameMode.useItemOn(client.player, InteractionHand.MAIN_HAND, hitResult);
+        client.player.swing(InteractionHand.MAIN_HAND);
+    }
+
+    private static boolean selectOrMoveToHotbar(Minecraft client, Predicate<ItemStack> predicate) {
+        Inventory inventory = client.player.getInventory();
+        for (int slot = 0; slot < Inventory.getSelectionSize(); slot++) {
+            if (predicate.test(inventory.getItem(slot))) {
+                inventory.setSelectedSlot(slot);
+                return true;
+            }
+        }
+        for (int slot = Inventory.getSelectionSize(); slot < Inventory.INVENTORY_SIZE; slot++) {
+            if (!predicate.test(inventory.getItem(slot))) {
+                continue;
+            }
+            int hotbarSlot = findHotbarTargetSlot(inventory);
+            client.gameMode.handleContainerInput(client.player.inventoryMenu.containerId, slot, hotbarSlot, ContainerInput.SWAP, client.player);
+            inventory.setSelectedSlot(hotbarSlot);
+            return true;
+        }
+        return false;
+    }
+
+    private static void mineBlock(Minecraft client, BlockPos pos) {
+        if (!pos.equals(storeMineTarget)) {
+            storeMineTarget = pos.immutable();
+            storeMiningActive = false;
+            storeMiningTicks = 0;
+        }
+        Direction side = Direction.getApproximateNearest(
+                client.player.getX() - (pos.getX() + 0.5D),
+                client.player.getEyeY() - (pos.getY() + 0.5D),
+                client.player.getZ() - (pos.getZ() + 0.5D)
+        );
+        GroundMovementController.smoothFacePoint(client, pos.getCenter(), 10.0F, 6.0F);
+        if (!storeMiningActive) {
+            client.gameMode.startDestroyBlock(pos, side);
+            storeMiningActive = true;
+        }
+        client.gameMode.continueDestroyBlock(pos, side);
+        client.player.swing(InteractionHand.MAIN_HAND);
+        storeMiningTicks++;
+        if (!(client.level.getBlockState(pos).getBlock() instanceof ShulkerBoxBlock) || storeMiningTicks > STORE_SHULKER_TIMEOUT_TICKS) {
+            clearStoreMining(client);
+        }
+    }
+
+    private static void clearStoreMining(Minecraft client) {
+        storeMineTarget = null;
+        storeMiningActive = false;
+        storeMiningTicks = 0;
+        if (client != null && client.options != null) {
+            client.options.keyAttack.setDown(false);
+        }
+    }
+
+    private static void resetPlacedStoreState() {
+        storeOreCountBefore = countTargetOre(Minecraft.getInstance());
+        storeCurrentBackpackIndex = 0;
+        storeMovedAmount = 0;
+        storePickupTimeoutTicks = 0;
+        storeShulkerPos = null;
+        clearStoreMining(Minecraft.getInstance());
+    }
+
     private static void resetStoreState() {
         storeOreCountBefore = 0;
         storeBackpackNextIndex = 1;
         storeCurrentBackpackIndex = 0;
         storeAttempts = 0;
+        storeMovedAmount = 0;
+        storePickupTimeoutTicks = 0;
+        storeShulkerPos = null;
+        clearStoreMining(Minecraft.getInstance());
     }
 
     private static String collectText(Minecraft client, ItemStack stack) {
@@ -839,9 +1139,13 @@ final class AutoMineController {
         START_BARITONE,
         MINING,
         OPEN_EC_FOR_STORE,
-        CLICK_BACKPACK_FOR_STORE,
+        TAKE_BACKPACK_FROM_EC,
+        PLACE_BACKPACK_FOR_STORE,
+        OPEN_PLACED_BACKPACK,
         STORE_ORES_IN_BACKPACK,
-        VERIFY_BACKPACK_STORE,
+        PICKUP_STORED_BACKPACK,
+        OPEN_EC_FOR_RETURN,
+        RETURN_BACKPACK_TO_EC,
         REPAIR_PICKAXE,
         WAIT_AFTER_DEATH
     }
