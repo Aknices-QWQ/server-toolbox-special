@@ -74,8 +74,10 @@ final class AutoStrengthenConfig {
                     readString(properties, "clearAttributesMenuLabel", values.clearAttributesMenuLabel()),
                     readString(properties, "clearAttributesConfirmLabel", values.clearAttributesConfirmLabel()),
                     readBoolean(properties, "feishuNotificationEnabled", values.feishuNotificationEnabled()),
-                    readString(properties, "feishuWebhookUrl", values.feishuWebhookUrl()),
-                    readString(properties, "feishuSecret", values.feishuSecret())
+                    readString(properties, "feishuAppId", values.feishuAppId()),
+                    readString(properties, "feishuAppSecret", values.feishuAppSecret()),
+                    readString(properties, "feishuReceiveIdType", values.feishuReceiveIdType()),
+                    readString(properties, "feishuReceiveId", values.feishuReceiveId())
             ).clamped();
         } catch (IOException | NumberFormatException exception) {
             ScreenProbe.LOGGER.warn("Failed to load auto strengthen config from {}", path.toAbsolutePath(), exception);
@@ -108,8 +110,10 @@ final class AutoStrengthenConfig {
         properties.setProperty("clearAttributesMenuLabel", config.clearAttributesMenuLabel());
         properties.setProperty("clearAttributesConfirmLabel", config.clearAttributesConfirmLabel());
         properties.setProperty("feishuNotificationEnabled", Boolean.toString(config.feishuNotificationEnabled()));
-        properties.setProperty("feishuWebhookUrl", config.feishuWebhookUrl());
-        properties.setProperty("feishuSecret", config.feishuSecret());
+        properties.setProperty("feishuAppId", config.feishuAppId());
+        properties.setProperty("feishuAppSecret", config.feishuAppSecret());
+        properties.setProperty("feishuReceiveIdType", config.feishuReceiveIdType());
+        properties.setProperty("feishuReceiveId", config.feishuReceiveId());
 
         try {
             Files.createDirectories(path.getParent());
@@ -167,13 +171,14 @@ final class AutoStrengthenConfig {
                   int autoClearAttributeSumThreshold, String cdCommand, String equipmentCategoryLabel,
                   String strengthenMenuLabel, String clearAttributesMenuLabel,
                   String clearAttributesConfirmLabel, boolean feishuNotificationEnabled,
-                  String feishuWebhookUrl, String feishuSecret) {
+                  String feishuAppId, String feishuAppSecret, String feishuReceiveIdType,
+                  String feishuReceiveId) {
         static Config defaults() {
             return new Config(4, 7, 7, 5, 5, 7,
                     true, true, false,
                     true, 2, 3,
                     "cd", "装备属性", "装备强化", "清除属性", "确认清除",
-                    false, "", "");
+                    false, "", "", "chat_id", "");
         }
 
         Config clamped() {
@@ -197,8 +202,10 @@ final class AutoStrengthenConfig {
                     nonBlank(clearAttributesMenuLabel, defaults.clearAttributesMenuLabel()),
                     nonBlank(clearAttributesConfirmLabel, defaults.clearAttributesConfirmLabel()),
                     feishuNotificationEnabled,
-                    feishuWebhookUrl == null ? "" : feishuWebhookUrl.trim(),
-                    feishuSecret == null ? "" : feishuSecret.trim()
+                    feishuAppId == null ? "" : feishuAppId.trim(),
+                    feishuAppSecret == null ? "" : feishuAppSecret.trim(),
+                    nonBlank(feishuReceiveIdType, defaults.feishuReceiveIdType()),
+                    feishuReceiveId == null ? "" : feishuReceiveId.trim()
             );
         }
     }

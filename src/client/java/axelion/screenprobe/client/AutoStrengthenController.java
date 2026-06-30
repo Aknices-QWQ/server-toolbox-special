@@ -1,6 +1,11 @@
 package axelion.screenprobe.client;
 
 import axelion.screenprobe.ScreenProbe;
+import com.google.gson.JsonObject;
+import com.lark.oapi.Client;
+import com.lark.oapi.service.im.v1.model.CreateMessageReq;
+import com.lark.oapi.service.im.v1.model.CreateMessageReqBody;
+import com.lark.oapi.service.im.v1.model.CreateMessageResp;
 import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import net.fabricmc.fabric.api.client.command.v2.ClientCommands;
@@ -20,19 +25,11 @@ import net.minecraft.world.item.Items;
 import net.minecraft.world.item.TooltipFlag;
 
 import java.io.IOException;
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.security.InvalidKeyException;
-import java.security.NoSuchAlgorithmException;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
-import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -40,9 +37,6 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-
-import javax.crypto.Mac;
-import javax.crypto.spec.SecretKeySpec;
 
 final class AutoStrengthenController {
     private static final String COMMAND = "autostrength";
@@ -54,7 +48,6 @@ final class AutoStrengthenController {
     private static final List<String> CLEAR_CONFIRM_FALLBACK_LABELS = List.of("确认清除", "确认", "开始清除", "确认重置", "重置属性");
     private static final DateTimeFormatter FILE_TIME_FORMAT = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss-SSS");
     private static final Pattern INTEGER_PATTERN = Pattern.compile("(?<![\\d.])([+-]?\\d+)(?![\\d.])");
-    private static final HttpClient NOTIFICATION_HTTP_CLIENT = HttpClient.newBuilder().build();
     private static final int TIMEOUT_TICKS = 20 * 30;
     private static final int MAX_MENU_RETRIES = 3;
     private static final int MENU_STALL_RETRY_TICKS = 20;
@@ -1248,7 +1241,11 @@ final class AutoStrengthenController {
 
     private static void sendFeishuMatchedNotification(Minecraft client, String itemName, Evaluation evaluation) {
         AutoStrengthenConfig.Config config = AutoStrengthenConfig.get(client);
-        if (!config.feishuNotificationEnabled() || config.feishuWebhookUrl().isBlank()) {
+        if (!config.feishuNotificationEnabled()
+                || config.feishuAppId().isBlank()
+                || config.feishuAppSecret().isBlank()
+                || config.feishuReceiveIdType().isBlank()
+                || config.feishuReceiveId().isBlank()) {
             return;
         }
 
@@ -1259,48 +1256,9 @@ final class AutoStrengthenController {
                 + "原因：" + evaluation.reason() + "\n"
                 + "概览：" + evaluation.summary() + "\n"
                 + "装备属性：" + formatEvaluationAttributes(evaluation);
-        String body;
-        try {
-            body = buildFeishuPayload(config.feishuSecret(), text);
-        } catch (RuntimeException exception) {
-            ScreenProbe.LOGGER.warn("Failed to build Feishu strengthen notification payload", exception);
-            return;
-        }
-
-        HttpRequest request;
-        try {
-            request = HttpRequest.newBuilder(URI.create(config.feishuWebhookUrl()))
-                    .header("Content-Type", "application/json; charset=utf-8")
-                    .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
-                    .build();
-        } catch (IllegalArgumentException exception) {
-            ScreenProbe.LOGGER.warn("Invalid Feishu webhook URL: {}", config.feishuWebhookUrl(), exception);
-            sendMessage(client, "飞书出货通知 URL 无效，请检查 /autosettings。");
-            return;
-        }
-
-        NOTIFICATION_HTTP_CLIENT.sendAsync(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8))
-                .whenComplete((response, throwable) -> {
-                    if (throwable != null) {
-                        ScreenProbe.LOGGER.warn("Failed to send Feishu strengthen notification", throwable);
-                        return;
-                    }
-                    if (response.statusCode() < 200 || response.statusCode() >= 300) {
-                        ScreenProbe.LOGGER.warn("Feishu strengthen notification returned HTTP {}: {}",
-                                response.statusCode(), response.body());
-                    }
-                });
-    }
-
-    private static String buildFeishuPayload(String secret, String text) {
-        String escapedText = escapeJson(text);
-        if (secret == null || secret.isBlank()) {
-            return "{\"msg_type\":\"text\",\"content\":{\"text\":\"" + escapedText + "\"}}";
-        }
-        long timestamp = System.currentTimeMillis() / 1000L;
-        String sign = feishuSign(timestamp, secret);
-        return "{\"timestamp\":\"" + timestamp + "\",\"sign\":\"" + escapeJson(sign)
-                + "\",\"msg_type\":\"text\",\"content\":{\"text\":\"" + escapedText + "\"}}";
+        Thread notificationThread = new Thread(() -> sendFeishuSdkMessage(config, text), "ranmc-feishu-notify");
+        notificationThread.setDaemon(true);
+        notificationThread.start();
     }
 
     private static String formatEvaluationAttributes(Evaluation evaluation) {
@@ -1317,39 +1275,27 @@ final class AutoStrengthenController {
         return builder.toString();
     }
 
-    private static String feishuSign(long timestamp, String secret) {
+    private static void sendFeishuSdkMessage(AutoStrengthenConfig.Config config, String text) {
         try {
-            String stringToSign = timestamp + "\n" + secret;
-            Mac mac = Mac.getInstance("HmacSHA256");
-            mac.init(new SecretKeySpec(stringToSign.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
-            return Base64.getEncoder().encodeToString(mac.doFinal(new byte[0]));
-        } catch (NoSuchAlgorithmException | InvalidKeyException exception) {
-            throw new IllegalStateException("Unable to sign Feishu notification", exception);
-        }
-    }
-
-    private static String escapeJson(String value) {
-        StringBuilder builder = new StringBuilder(value.length() + 16);
-        for (int i = 0; i < value.length(); i++) {
-            char c = value.charAt(i);
-            switch (c) {
-                case '"' -> builder.append("\\\"");
-                case '\\' -> builder.append("\\\\");
-                case '\b' -> builder.append("\\b");
-                case '\f' -> builder.append("\\f");
-                case '\n' -> builder.append("\\n");
-                case '\r' -> builder.append("\\r");
-                case '\t' -> builder.append("\\t");
-                default -> {
-                    if (c < 0x20) {
-                        builder.append(String.format("\\u%04x", (int) c));
-                    } else {
-                        builder.append(c);
-                    }
-                }
+            JsonObject content = new JsonObject();
+            content.addProperty("text", text);
+            Client feishuClient = Client.newBuilder(config.feishuAppId(), config.feishuAppSecret()).build();
+            CreateMessageReq request = CreateMessageReq.newBuilder()
+                    .receiveIdType(config.feishuReceiveIdType())
+                    .createMessageReqBody(CreateMessageReqBody.newBuilder()
+                            .receiveId(config.feishuReceiveId())
+                            .msgType("text")
+                            .content(content.toString())
+                            .build())
+                    .build();
+            CreateMessageResp response = feishuClient.im().message().create(request);
+            if (!response.success()) {
+                ScreenProbe.LOGGER.warn("Feishu strengthen notification failed: code={}, msg={}, requestId={}",
+                        response.getCode(), response.getMsg(), response.getRequestId());
             }
+        } catch (Exception exception) {
+            ScreenProbe.LOGGER.warn("Failed to send Feishu strengthen notification through SDK", exception);
         }
-        return builder.toString();
     }
 
     private static String normalizeDestroyTargetLabel(String raw) {

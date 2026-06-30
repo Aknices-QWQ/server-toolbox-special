@@ -175,10 +175,14 @@ final class ScreenProbeConfigScreenFactory {
                                 () -> strengthenDraft.clearAttributesConfirmLabel, value -> strengthenDraft.clearAttributesConfirmLabel = value))
                         .option(booleanOption("飞书出货通知", "自动强化命中保留条件时发送飞书机器人通知。", strengthenDefaults.feishuNotificationEnabled(),
                                 () -> strengthenDraft.feishuNotificationEnabled, value -> strengthenDraft.feishuNotificationEnabled = value))
-                        .option(stringOption("飞书Webhook", "飞书群自定义机器人的 Webhook URL。", strengthenDefaults.feishuWebhookUrl(),
-                                () -> strengthenDraft.feishuWebhookUrl, value -> strengthenDraft.feishuWebhookUrl = value))
-                        .option(stringOption("飞书Secret", "飞书机器人签名校验密钥；未开启签名时留空。", strengthenDefaults.feishuSecret(),
-                                () -> strengthenDraft.feishuSecret, value -> strengthenDraft.feishuSecret = value))
+                        .option(stringOption("飞书App ID", "飞书应用的 App ID。", strengthenDefaults.feishuAppId(),
+                                () -> strengthenDraft.feishuAppId, value -> strengthenDraft.feishuAppId = value))
+                        .option(stringOption("飞书App Secret", "飞书应用的 App Secret。", strengthenDefaults.feishuAppSecret(),
+                                () -> strengthenDraft.feishuAppSecret, value -> strengthenDraft.feishuAppSecret = value))
+                        .option(stringOption("飞书接收类型", "消息接收 ID 类型，例如 chat_id、open_id、user_id、email。", strengthenDefaults.feishuReceiveIdType(),
+                                () -> strengthenDraft.feishuReceiveIdType, value -> strengthenDraft.feishuReceiveIdType = value))
+                        .option(stringOption("飞书接收ID", "群聊 chat_id 或用户 open_id 等，需与接收类型一致。", strengthenDefaults.feishuReceiveId(),
+                                () -> strengthenDraft.feishuReceiveId, value -> strengthenDraft.feishuReceiveId = value))
                         .build())
                 .save(() -> {
                     ScreenProbeGlobalConfig.Config globalSaved = globalDraft.toConfig().clamped();
@@ -379,8 +383,10 @@ final class ScreenProbeConfigScreenFactory {
         private String clearAttributesMenuLabel;
         private String clearAttributesConfirmLabel;
         private boolean feishuNotificationEnabled;
-        private String feishuWebhookUrl;
-        private String feishuSecret;
+        private String feishuAppId;
+        private String feishuAppSecret;
+        private String feishuReceiveIdType;
+        private String feishuReceiveId;
 
         private StrengthenDraft(AutoStrengthenConfig.Config current) {
             defaultRolls = current.defaultRolls();
@@ -401,8 +407,10 @@ final class ScreenProbeConfigScreenFactory {
             clearAttributesMenuLabel = current.clearAttributesMenuLabel();
             clearAttributesConfirmLabel = current.clearAttributesConfirmLabel();
             feishuNotificationEnabled = current.feishuNotificationEnabled();
-            feishuWebhookUrl = current.feishuWebhookUrl();
-            feishuSecret = current.feishuSecret();
+            feishuAppId = current.feishuAppId();
+            feishuAppSecret = current.feishuAppSecret();
+            feishuReceiveIdType = current.feishuReceiveIdType();
+            feishuReceiveId = current.feishuReceiveId();
         }
 
         private AutoStrengthenConfig.Config toConfig() {
@@ -425,8 +433,10 @@ final class ScreenProbeConfigScreenFactory {
                     clearAttributesMenuLabel,
                     clearAttributesConfirmLabel,
                     feishuNotificationEnabled,
-                    feishuWebhookUrl,
-                    feishuSecret
+                    feishuAppId,
+                    feishuAppSecret,
+                    feishuReceiveIdType,
+                    feishuReceiveId
             );
         }
     }
