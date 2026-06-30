@@ -88,6 +88,7 @@ final class AutoStrengthenController {
     private static boolean returningFromClear;
     private static boolean pendingClearHadAttributes;
     private static boolean destroyMode;
+    private static boolean craftLoopMode;
     private static String destroyTargetLabel = "";
     private static CraftPlan pendingCraftPlan;
     private static State stateAfterScreenClose = State.IDLE;
@@ -202,6 +203,7 @@ final class AutoStrengthenController {
             case OPEN_ROOT_MENU -> tickOpenRootMenu(client);
             case OPEN_ROOT_MENU_FOR_CLEAR -> tickOpenRootMenuForClear(client);
             case WAIT_FOR_SCREEN_CLOSE -> tickWaitForScreenClose(client);
+            case SELECT_OR_CRAFT_NEXT_TARGET -> tickSelectOrCraftNextTarget(client);
             case WAIT_FOR_CRAFTING_TABLE -> tickWaitForCraftingTable(client);
             case READY_TO_CRAFT_TARGET -> {
                 if (client.screen instanceof AbstractContainerScreen<?> containerScreen) {
@@ -381,6 +383,7 @@ final class AutoStrengthenController {
     private static void startFromCommand(Minecraft client, int requestedRolls) {
         AutoStrengthenConfig.Config config = AutoStrengthenConfig.get(client);
         destroyMode = false;
+        craftLoopMode = false;
         destroyTargetLabel = "";
         pendingCraftPlan = null;
         start(client, requestedRolls, config.clearBeforeStart());
@@ -391,6 +394,7 @@ final class AutoStrengthenController {
         destroyMode = true;
         destroyTargetLabel = normalizeDestroyTargetLabel(part);
         pendingCraftPlan = CraftPlan.forTarget(destroyTargetLabel);
+        craftLoopMode = pendingCraftPlan != null;
         if (isClientReady(client) && selectExistingUnstrengthenedTarget(client, destroyTargetLabel)) {
             sendMessage(client, "已在背包找到未强化或强化次数为 0 的 " + destroyTargetLabel + "，优先强化该物品。");
         } else if (isClientReady(client) && client.getConnection() != null) {
@@ -434,6 +438,7 @@ final class AutoStrengthenController {
         runLog.add("startedAt=" + LocalDateTime.now());
         runLog.add("maxRolls=" + maxRolls);
         runLog.add("craftMode=true");
+        runLog.add("craftLoopMode=true");
         runLog.add("destroyMode=true");
         runLog.add("destroyTargetLabel=" + destroyTargetLabel);
         runLog.add("");
@@ -452,7 +457,7 @@ final class AutoStrengthenController {
         state = State.WAIT_FOR_CRAFTING_TABLE;
         delayTicks = actionDelayTicks(client);
         timeoutTicks = TIMEOUT_TICKS;
-        sendMessage(client, "背包没有可用的 " + destroyTargetLabel + "，已打开 /wb 自动合成后强化。");
+        sendMessage(client, "自动合成强化启动：" + destroyTargetLabel + "，会一直循环直到出货。");
     }
 
     private static void start(Minecraft client, int requestedRolls, boolean clearBeforeStart) {
@@ -869,6 +874,33 @@ final class AutoStrengthenController {
                 || nextState == State.READY_TO_INSERT_CLEAR_HELD;
     }
 
+    private static void tickSelectOrCraftNextTarget(Minecraft client) {
+        if (!craftLoopMode || pendingCraftPlan == null) {
+            state = State.READY_TO_INSERT_HELD;
+            delayTicks = actionDelayTicks(client);
+            timeoutTicks = TIMEOUT_TICKS;
+            return;
+        }
+        if (client.screen != null) {
+            beginCloseScreen(client, State.SELECT_OR_CRAFT_NEXT_TARGET, "选择下一件合成强化目标");
+            return;
+        }
+        if (selectExistingUnstrengthenedTarget(client, destroyTargetLabel)) {
+            runLog.add("craftLoopSelectedExisting=" + destroyTargetLabel);
+            insertHeldItemRequested = true;
+            client.getConnection().sendCommand(AutoStrengthenConfig.get(client).cdCommand());
+            state = State.CLICK_EQUIPMENT_CATEGORY;
+            delayTicks = actionDelayTicks(client);
+            timeoutTicks = TIMEOUT_TICKS;
+            return;
+        }
+        client.getConnection().sendCommand("wb");
+        state = State.WAIT_FOR_CRAFTING_TABLE;
+        delayTicks = actionDelayTicks(client);
+        timeoutTicks = TIMEOUT_TICKS;
+        runLog.add("craftLoopOpenWorkbench=" + destroyTargetLabel);
+    }
+
     private static boolean retryMenuFlow(Minecraft client, boolean forClear, String reason) {
         if (menuRetryAttemptsRemaining <= 0) {
             return false;
@@ -978,7 +1010,6 @@ final class AutoStrengthenController {
             return;
         }
 
-        pendingCraftPlan = null;
         insertHeldItemRequested = true;
         client.getConnection().sendCommand(config.cdCommand());
         state = State.CLICK_EQUIPMENT_CATEGORY;
@@ -1033,8 +1064,13 @@ final class AutoStrengthenController {
 
         rollsDone = 0;
         resetRollObservation();
-        insertHeldItemRequested = true;
-        state = State.READY_TO_INSERT_HELD;
+        if (craftLoopMode) {
+            insertHeldItemRequested = false;
+            state = State.SELECT_OR_CRAFT_NEXT_TARGET;
+        } else {
+            insertHeldItemRequested = true;
+            state = State.READY_TO_INSERT_HELD;
+        }
         delayTicks = actionDelayTicks(client);
         timeoutTicks = TIMEOUT_TICKS;
     }
@@ -1915,7 +1951,9 @@ final class AutoStrengthenController {
         returningFromClear = false;
         pendingClearHadAttributes = false;
         destroyMode = false;
+        craftLoopMode = false;
         destroyTargetLabel = "";
+        pendingCraftPlan = null;
         stateAfterScreenClose = State.IDLE;
         pendingCloseReason = "";
         delayTicks = 0;
@@ -1998,6 +2036,7 @@ final class AutoStrengthenController {
         OPEN_ROOT_MENU,
         OPEN_ROOT_MENU_FOR_CLEAR,
         WAIT_FOR_SCREEN_CLOSE,
+        SELECT_OR_CRAFT_NEXT_TARGET,
         WAIT_FOR_CRAFTING_TABLE,
         READY_TO_CRAFT_TARGET,
         WAIT_FOR_CRAFT_RESULT,
