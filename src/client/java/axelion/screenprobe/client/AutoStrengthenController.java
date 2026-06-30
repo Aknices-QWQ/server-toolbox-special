@@ -1256,7 +1256,7 @@ final class AutoStrengthenController {
                 + "原因：" + evaluation.reason() + "\n"
                 + "概览：" + evaluation.summary() + "\n"
                 + "装备属性：" + formatEvaluationAttributes(evaluation);
-        sendFeishuTextMessage(config, text);
+        sendFeishuTextMessage(config, text, null);
     }
 
     private static String formatEvaluationAttributes(Evaluation evaluation) {
@@ -1274,12 +1274,22 @@ final class AutoStrengthenController {
     }
 
     static void sendFeishuTextMessage(AutoStrengthenConfig.Config config, String text) {
-        Thread notificationThread = new Thread(() -> sendFeishuSdkMessage(config, text), "ranmc-feishu-notify");
+        sendFeishuTextMessage(config, text, null);
+    }
+
+    static void sendFeishuTextMessage(AutoStrengthenConfig.Config config, String text,
+                                      java.util.function.Consumer<String> resultCallback) {
+        Thread notificationThread = new Thread(() -> sendFeishuSdkMessage(config, text, resultCallback), "ranmc-feishu-notify");
         notificationThread.setDaemon(true);
         notificationThread.start();
     }
 
     private static void sendFeishuSdkMessage(AutoStrengthenConfig.Config config, String text) {
+        sendFeishuSdkMessage(config, text, null);
+    }
+
+    private static void sendFeishuSdkMessage(AutoStrengthenConfig.Config config, String text,
+                                             java.util.function.Consumer<String> resultCallback) {
         try {
             JsonObject content = new JsonObject();
             content.addProperty("text", text);
@@ -1294,11 +1304,24 @@ final class AutoStrengthenController {
                     .build();
             CreateMessageResp response = feishuClient.im().message().create(request);
             if (!response.success()) {
-                ScreenProbe.LOGGER.warn("Feishu strengthen notification failed: code={}, msg={}, requestId={}",
-                        response.getCode(), response.getMsg(), response.getRequestId());
+                String message = "飞书发送失败：code=" + response.getCode()
+                        + "，msg=" + response.getMsg()
+                        + "，requestId=" + response.getRequestId();
+                ScreenProbe.LOGGER.warn(message);
+                if (resultCallback != null) {
+                    resultCallback.accept(message);
+                }
+                return;
+            }
+            if (resultCallback != null) {
+                resultCallback.accept("飞书发送成功。");
             }
         } catch (Exception exception) {
             ScreenProbe.LOGGER.warn("Failed to send Feishu strengthen notification through SDK", exception);
+            if (resultCallback != null) {
+                resultCallback.accept("飞书发送异常：" + exception.getClass().getSimpleName()
+                        + "：" + exception.getMessage());
+            }
         }
     }
 

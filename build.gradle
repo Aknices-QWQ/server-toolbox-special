@@ -26,6 +26,7 @@ dependencies {
     implementation "net.fabricmc:fabric-loader:${project.loader_version}"
     implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
     implementation include("com.larksuite.oapi:oapi-sdk:2.8.3")
+    implementation include("com.larksuite.oapi:larksuite-oapi-shaded-protobuf:2.4.6")
     compileOnly files("libs/yet_another_config_lib_v3-3.9.3+26.2-fabric.jar")
     runtimeOnly files("libs/yet_another_config_lib_v3-3.9.3+26.2-fabric.jar")
     compileOnly files("libs/modmenu-18.0.0-beta.1.jar")

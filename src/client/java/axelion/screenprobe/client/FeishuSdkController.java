@@ -23,8 +23,13 @@ final class FeishuSdkController {
         }
         String player = client.player == null ? "-" : client.player.getName().getString();
         AutoStrengthenController.sendFeishuTextMessage(config,
-                "飞书测试消息\n玩家：" + player + "\n来源：ranmc: toolbox 自动强化");
-        sendMessage(client, "已发送飞书测试消息。");
+                "飞书测试消息\n玩家：" + player + "\n来源：ranmc: toolbox 自动强化",
+                result -> {
+                    if (client != null) {
+                        client.execute(() -> sendMessage(client, result));
+                    }
+                });
+        sendMessage(client, "飞书测试消息已提交，等待 SDK 返回。");
     }
 
     static void startLongConnection(Minecraft client) {
