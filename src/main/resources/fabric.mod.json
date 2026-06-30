@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "id": "screenprobe",
+  "version": "${version}",
+  "name": "Aknices_QWQ专属端",
+  "description": "Aknices_QWQ专属端：自动收售、自动打龙、自动挖区块与界面调试客户端。",
+  "authors": [
+    "Aknices_QWQ"
+  ],
+  "license": "MIT",
+  "environment": "client",
+  "entrypoints": {
+    "client": [
+      "axelion.screenprobe.client.ScreenProbeClient"
+    ],
+    "modmenu": [
+      "axelion.screenprobe.client.ScreenProbeModMenuCompat"
+    ]
+  },
+  "depends": {
+    "fabricloader": ">=0.19.2",
+    "minecraft": "~26.1.2",
+    "java": ">=25",
+    "fabric-api": "*",
+    "yet_another_config_lib_v3": "*"
+  },
+  "suggests": {
+    "modmenu": "*"
+  }
+}

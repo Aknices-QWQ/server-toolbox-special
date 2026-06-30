@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "id": "screenprobe",
+  "version": "${version}",
+  "name": "桃花源特供 Screen Probe",
+  "description": "桃花源特供：自动收售、自动打龙、自动挖区块与界面调试客户端。",
+  "authors": [
+    "Aknices_QWQ"
+  ],
+  "license": "MIT",
+  "environment": "client",
+  "entrypoints": {
+    "client": [
+      "axelion.screenprobe.client.ScreenProbeClient"
+    ],
+    "modmenu": [
+      "axelion.screenprobe.client.ScreenProbeModMenuCompat"
+    ]
+  },
+  "depends": {
+    "fabricloader": ">=0.19.2",
+    "minecraft": "~1.21.11",
+    "java": ">=21",
+    "fabric-api": "*"
+  },
+  "suggests": {
+    "modmenu": "*"
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "name": "ranmc-afk-bot",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Command-line controlled Minecraft AFK bot for ranmc.cc.",
+  "main": "mc-bot.js",
+  "scripts": {
+    "start": "node mc-bot.js"
+  },
+  "dependencies": {
+    "dotenv": "^17.4.2",
+    "mineflayer": "^4.37.1",
+    "socks": "^2.8.9"
+  }
+}

@@ -1,0 +1,12 @@
+.gradle/
+build/
+out/
+run/
+.idea/
+*.iml
+*.log
+.env
+node_modules/
+release-artifacts/
+screen-probe-1.21.11/build/
+screen-probe-1.21.11/.gradle/
