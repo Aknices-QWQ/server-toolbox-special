@@ -21,8 +21,8 @@ import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.item.TooltipFlag;
-import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.ShulkerBoxBlock;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.Vec3;
 
@@ -31,6 +31,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.BooleanSupplier;
 import java.util.function.Predicate;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -46,6 +47,9 @@ final class AutoMineController {
     private static final int PICKAXE_REPAIR_DAMAGE_THRESHOLD = 250;
     private static final int MAX_BACKPACK_INDEX = 100;
     private static final int STORE_SHULKER_TIMEOUT_TICKS = 20 * 12;
+    private static final int SHULKER_INITIAL_PLACE_DISTANCE = 2;
+    private static final int JUNK_DROP_COOLDOWN_TICKS = 4;
+    private static final int SHULKER_CLEAR_TIMEOUT_TICKS = 20 * 20;
     private static final Pattern BACKPACK_NAME_PATTERN = Pattern.compile("背包(\\d+)");
     private static final Pattern TEMP_BACKPACK_NAME_PATTERN = Pattern.compile("临时背包(\\d+)");
     private static final Set<String> DIAMOND_KEEP_IDS = Set.of(
@@ -86,13 +90,17 @@ final class AutoMineController {
     private static int repairHotbarSlot;
     private static int repairInitialDamage;
     private static int restoreTempIndex;
+    private static int junkDropCooldownTicks;
+    private static int shulkerClearTimeoutTicks;
     private static boolean waitingAfterDeath;
     private static boolean storeMiningActive;
     private static boolean temporaryInventoryPrepared;
     private static boolean pendingStopNotify;
     private static State nextStateAfterTemporaryPrepare = State.IDLE;
+    private static State shulkerClearReturnState = State.IDLE;
     private static BlockPos storeShulkerPos;
     private static BlockPos storeMineTarget;
+    private static BlockPos shulkerClearCenter;
     private static String lastDeathMessage = "";
     private static String pendingStopMessage = "";
     private static final List<Integer> sessionTempBackpacks = new ArrayList<>();
@@ -159,6 +167,9 @@ final class AutoMineController {
         if (baritoneCooldownTicks > 0) {
             baritoneCooldownTicks--;
         }
+        if (junkDropCooldownTicks > 0) {
+            junkDropCooldownTicks--;
+        }
         if (reportCooldownTicks > 0) {
             reportCooldownTicks--;
         } else if (state == State.MINING) {
@@ -170,6 +181,7 @@ final class AutoMineController {
             case OPEN_EC_FOR_TEMP_PREPARE -> tickOpenEcForTempPrepare(client);
             case TAKE_TEMP_BACKPACK_FROM_EC -> tickTakeTempBackpackFromEc(client);
             case PLACE_TEMP_BACKPACK -> tickPlaceTempBackpack(client);
+            case CLEAR_SHULKER_AREA -> tickClearShulkerArea(client);
             case OPEN_TEMP_BACKPACK -> tickOpenTempBackpack(client);
             case STORE_TEMP_INVENTORY -> tickStoreTempInventory(client);
             case PICKUP_TEMP_BACKPACK -> tickPickupTempBackpack(client);
@@ -195,6 +207,7 @@ final class AutoMineController {
             case OPEN_EC_FOR_STORE -> tickOpenEcForStore(client);
             case TAKE_BACKPACK_FROM_EC -> tickTakeBackpackFromEc(client);
             case PLACE_BACKPACK_FOR_STORE -> tickPlaceBackpackForStore(client);
+            case CLEAR_SHULKER_AREA_FOR_STORE -> tickClearShulkerArea(client);
             case OPEN_PLACED_BACKPACK -> tickOpenPlacedBackpack(client);
             case STORE_ORES_IN_BACKPACK -> tickStoreOresInBackpack(client);
             case PICKUP_STORED_BACKPACK -> tickPickupStoredBackpack(client);
@@ -382,11 +395,7 @@ final class AutoMineController {
             return;
         }
         storeShulkerPos = placePos.get();
-        placeShulker(client, storeShulkerPos);
-        shulkerPlaceMinDistance = 0;
-        state = State.OPEN_TEMP_BACKPACK;
-        delayTicks = MENU_DELAY_TICKS * 2;
-        timeoutTicks = STORE_SHULKER_TIMEOUT_TICKS;
+        beginShulkerAreaClear(storeShulkerPos, State.OPEN_TEMP_BACKPACK);
     }
 
     private static void tickOpenTempBackpack(Minecraft client) {
@@ -548,11 +557,7 @@ final class AutoMineController {
             return;
         }
         storeShulkerPos = placePos.get();
-        placeShulker(client, storeShulkerPos);
-        shulkerPlaceMinDistance = 0;
-        state = State.OPEN_TEMP_BACKPACK_FOR_RESTORE;
-        delayTicks = MENU_DELAY_TICKS * 2;
-        timeoutTicks = STORE_SHULKER_TIMEOUT_TICKS;
+        beginShulkerAreaClear(storeShulkerPos, State.OPEN_TEMP_BACKPACK_FOR_RESTORE);
     }
 
     private static void tickOpenTempBackpackForRestore(Minecraft client) {
@@ -799,6 +804,52 @@ final class AutoMineController {
         sendMessage(client, "背包接近满，正在打开 /ec 取出背包潜影盒存矿。当前 " + oreCount + " 个。");
     }
 
+    private static void beginShulkerAreaClear(BlockPos center, State afterPlaceState) {
+        shulkerClearCenter = center.immutable();
+        shulkerClearReturnState = afterPlaceState;
+        shulkerClearTimeoutTicks = SHULKER_CLEAR_TIMEOUT_TICKS;
+        state = afterPlaceState == State.OPEN_PLACED_BACKPACK ? State.CLEAR_SHULKER_AREA_FOR_STORE : State.CLEAR_SHULKER_AREA;
+        delayTicks = 0;
+        timeoutTicks = SHULKER_CLEAR_TIMEOUT_TICKS;
+        clearStoreMining(Minecraft.getInstance());
+    }
+
+    private static void tickClearShulkerArea(Minecraft client) {
+        if (shulkerClearCenter == null || storeShulkerPos == null) {
+            failShulkerPlacement(client, "潜影盒清场位置丢失");
+            return;
+        }
+        Optional<BlockPos> clearTarget = nextShulkerAreaClearTarget(client, shulkerClearCenter);
+        if (clearTarget.isPresent()) {
+            if (shulkerClearTimeoutTicks-- <= 0) {
+                if (retryShulkerPlacementFurther(client)) {
+                    return;
+                }
+                failShulkerPlacement(client, "清理潜影盒 3x3 区域超时");
+                return;
+            }
+            if (!selectBestPickaxe(client)) {
+                failShulkerPlacement(client, "没有合格镐子清理潜影盒 3x3 区域");
+                return;
+            }
+            mineClearBlock(client, clearTarget.get());
+            return;
+        }
+        clearStoreMining(client);
+        if (!selectCurrentShulkerForPlacement(client)) {
+            failShulkerPlacement(client, "无法重新选中潜影盒");
+            return;
+        }
+        placeShulker(client, storeShulkerPos);
+        shulkerPlaceMinDistance = SHULKER_INITIAL_PLACE_DISTANCE;
+        shulkerClearCenter = null;
+        State next = shulkerClearReturnState;
+        shulkerClearReturnState = State.IDLE;
+        state = next;
+        delayTicks = MENU_DELAY_TICKS * 2;
+        timeoutTicks = STORE_SHULKER_TIMEOUT_TICKS;
+    }
+
     private static void tickOpenEcForStore(Minecraft client) {
         closeScreenIfNeeded(client);
         client.getConnection().sendCommand("ec");
@@ -845,11 +896,7 @@ final class AutoMineController {
             return;
         }
         storeShulkerPos = placePos.get();
-        placeShulker(client, storeShulkerPos);
-        shulkerPlaceMinDistance = 0;
-        state = State.OPEN_PLACED_BACKPACK;
-        delayTicks = MENU_DELAY_TICKS * 2;
-        timeoutTicks = STORE_SHULKER_TIMEOUT_TICKS;
+        beginShulkerAreaClear(storeShulkerPos, State.OPEN_PLACED_BACKPACK);
     }
 
     private static void tickOpenPlacedBackpack(Minecraft client) {
@@ -1250,6 +1297,9 @@ final class AutoMineController {
     }
 
     private static void discardJunk(Minecraft client) {
+        if (junkDropCooldownTicks > 0 || client.screen != null) {
+            return;
+        }
         Inventory inventory = client.player.getInventory();
         for (int slot = 0; slot < Inventory.INVENTORY_SIZE; slot++) {
             ItemStack stack = inventory.getItem(slot);
@@ -1257,7 +1307,20 @@ final class AutoMineController {
                 continue;
             }
             if (isJunkStack(stack)) {
-                client.gameMode.handleContainerInput(client.player.inventoryMenu.containerId, slot, 1, ContainerInput.THROW, client.player);
+                int previousSlot = inventory.getSelectedSlot();
+                if (slot >= Inventory.getSelectionSize()) {
+                    int hotbarSlot = findHotbarTargetSlot(inventory);
+                    client.gameMode.handleContainerInput(client.player.inventoryMenu.containerId, slot, hotbarSlot, ContainerInput.SWAP, client.player);
+                    inventory.setSelectedSlot(hotbarSlot);
+                } else {
+                    inventory.setSelectedSlot(slot);
+                }
+                client.player.drop(true);
+                if (previousSlot >= 0 && previousSlot < Inventory.getSelectionSize()) {
+                    inventory.setSelectedSlot(previousSlot);
+                }
+                junkDropCooldownTicks = JUNK_DROP_COOLDOWN_TICKS;
+                return;
             }
         }
     }
@@ -1274,6 +1337,10 @@ final class AutoMineController {
 
     private static boolean isJunkStack(ItemStack stack) {
         String id = BuiltInRegistries.ITEM.getKey(stack.getItem()).toString();
+        return isJunkId(id);
+    }
+
+    private static boolean isJunkId(String id) {
         return id.contains("stone")
                 || id.contains("cobblestone")
                 || id.contains("diorite")
@@ -1816,7 +1883,7 @@ final class AutoMineController {
         for (int distance = Math.max(0, minDistance); distance <= 4; distance++) {
             if (distance == 0) {
                 BlockPos candidate = base.above();
-                if (canPlaceShulkerAt(client, candidate)) {
+                if (canPrepareShulkerAreaAt(client, candidate)) {
                     return Optional.of(candidate.immutable());
                 }
                 continue;
@@ -1828,7 +1895,7 @@ final class AutoMineController {
                     }
                     BlockPos ground = base.offset(dx, 0, dz);
                     for (BlockPos candidate : List.of(ground, ground.above())) {
-                        if (canPlaceShulkerAt(client, candidate)) {
+                        if (canPrepareShulkerAreaAt(client, candidate)) {
                             return Optional.of(candidate.immutable());
                         }
                     }
@@ -1841,7 +1908,7 @@ final class AutoMineController {
     private static boolean retryPlaceFurther(Minecraft client, State retryState) {
         shulkerPlaceMinDistance++;
         if (shulkerPlaceMinDistance > 4) {
-            shulkerPlaceMinDistance = 0;
+            shulkerPlaceMinDistance = SHULKER_INITIAL_PLACE_DISTANCE;
             return false;
         }
         storeShulkerPos = null;
@@ -1852,17 +1919,92 @@ final class AutoMineController {
         return true;
     }
 
-    private static boolean canPlaceShulkerAt(Minecraft client, BlockPos pos) {
+    private static boolean retryShulkerPlacementFurther(Minecraft client) {
+        State retryState = switch (shulkerClearReturnState) {
+            case OPEN_PLACED_BACKPACK -> State.PLACE_BACKPACK_FOR_STORE;
+            case OPEN_TEMP_BACKPACK_FOR_RESTORE -> State.PLACE_TEMP_BACKPACK_FOR_RESTORE;
+            default -> State.PLACE_TEMP_BACKPACK;
+        };
+        shulkerClearCenter = null;
+        return retryPlaceFurther(client, retryState);
+    }
+
+    private static void failShulkerPlacement(Minecraft client, String reason) {
+        shulkerClearCenter = null;
+        State failedState = shulkerClearReturnState;
+        shulkerClearReturnState = State.IDLE;
+        clearStoreMining(client);
+        if (failedState == State.OPEN_PLACED_BACKPACK) {
+            retryNextBackpack(client, reason);
+            return;
+        }
+        if (failedState == State.OPEN_TEMP_BACKPACK_FOR_RESTORE) {
+            finishStop(client, reason + "，已停止。请手动恢复。", true);
+            return;
+        }
+        retryNextTempBackpack(client, reason);
+    }
+
+    private static boolean selectCurrentShulkerForPlacement(Minecraft client) {
+        if (shulkerClearReturnState == State.OPEN_PLACED_BACKPACK) {
+            return selectOrMoveToHotbar(client, stack -> isBackpackShulkerStack(stack, storeCurrentBackpackIndex));
+        }
+        return selectOrMoveToHotbar(client, stack -> isTempBackpackShulkerStack(stack, tempCurrentBackpackIndex));
+    }
+
+    private static boolean canPrepareShulkerAreaAt(Minecraft client, BlockPos pos) {
         if (client.player.getEyePosition().distanceToSqr(pos.getCenter()) > 25.0D) {
             return false;
         }
-        if (!client.level.getBlockState(pos).isAir() || !client.level.getFluidState(pos).isEmpty()) {
+        if (!client.level.getBlockState(pos.below()).blocksMotion()) {
             return false;
         }
-        if (!client.level.getBlockState(pos.above()).isAir()) {
+        for (int dy = 0; dy <= 1; dy++) {
+            for (int dx = -1; dx <= 1; dx++) {
+                for (int dz = -1; dz <= 1; dz++) {
+                    BlockPos areaPos = pos.offset(dx, dy, dz);
+                    BlockState state = client.level.getBlockState(areaPos);
+                    if (!isOpenOrClearableForShulkerArea(client, areaPos, state)) {
+                        return false;
+                    }
+                }
+            }
+        }
+        return true;
+    }
+
+    private static boolean isOpenOrClearableForShulkerArea(Minecraft client, BlockPos pos, BlockState state) {
+        return state.isAir() || isClearableForShulkerArea(client, pos, state);
+    }
+
+    private static Optional<BlockPos> nextShulkerAreaClearTarget(Minecraft client, BlockPos center) {
+        for (int dy = 0; dy <= 1; dy++) {
+            for (int dx = -1; dx <= 1; dx++) {
+                for (int dz = -1; dz <= 1; dz++) {
+                    BlockPos pos = center.offset(dx, dy, dz);
+                    BlockState state = client.level.getBlockState(pos);
+                    if (isClearableForShulkerArea(client, pos, state)) {
+                        return Optional.of(pos.immutable());
+                    }
+                }
+            }
+        }
+        return Optional.empty();
+    }
+
+    private static boolean isClearableForShulkerArea(Minecraft client, BlockPos pos, BlockState state) {
+        if (state.isAir() || !client.level.getFluidState(pos).isEmpty()) {
             return false;
         }
-        return client.level.getBlockState(pos.below()).blocksMotion();
+        if (client.player.getEyePosition().distanceToSqr(pos.getCenter()) > 25.0D) {
+            return false;
+        }
+        return isJunkBlockState(state);
+    }
+
+    private static boolean isJunkBlockState(BlockState state) {
+        String id = BuiltInRegistries.BLOCK.getKey(state.getBlock()).toString();
+        return isJunkId(id);
     }
 
     private static void placeShulker(Minecraft client, BlockPos targetPos) {
@@ -1910,7 +2052,17 @@ final class AutoMineController {
         return false;
     }
 
+    private static void mineClearBlock(Minecraft client, BlockPos pos) {
+        mineBlock(client, pos, SHULKER_CLEAR_TIMEOUT_TICKS,
+                () -> !isClearableForShulkerArea(client, pos, client.level.getBlockState(pos)));
+    }
+
     private static void mineBlock(Minecraft client, BlockPos pos) {
+        mineBlock(client, pos, STORE_SHULKER_TIMEOUT_TICKS,
+                () -> !(client.level.getBlockState(pos).getBlock() instanceof ShulkerBoxBlock));
+    }
+
+    private static void mineBlock(Minecraft client, BlockPos pos, int maxTicks, BooleanSupplier doneCondition) {
         if (!pos.equals(storeMineTarget)) {
             storeMineTarget = pos.immutable();
             storeMiningActive = false;
@@ -1929,7 +2081,7 @@ final class AutoMineController {
         client.gameMode.continueDestroyBlock(pos, side);
         client.player.swing(InteractionHand.MAIN_HAND);
         storeMiningTicks++;
-        if (!(client.level.getBlockState(pos).getBlock() instanceof ShulkerBoxBlock) || storeMiningTicks > STORE_SHULKER_TIMEOUT_TICKS) {
+        if (doneCondition.getAsBoolean() || storeMiningTicks > maxTicks) {
             clearStoreMining(client);
         }
     }
@@ -1976,7 +2128,7 @@ final class AutoMineController {
         tempCurrentBackpackIndex = 0;
         tempMovedStacks = 0;
         tempAttempts = 0;
-        shulkerPlaceMinDistance = 0;
+        shulkerPlaceMinDistance = SHULKER_INITIAL_PLACE_DISTANCE;
         nextStateAfterTemporaryPrepare = State.IDLE;
         resetTempPlacedState();
     }
@@ -2049,6 +2201,7 @@ final class AutoMineController {
         OPEN_EC_FOR_TEMP_PREPARE,
         TAKE_TEMP_BACKPACK_FROM_EC,
         PLACE_TEMP_BACKPACK,
+        CLEAR_SHULKER_AREA,
         OPEN_TEMP_BACKPACK,
         STORE_TEMP_INVENTORY,
         PICKUP_TEMP_BACKPACK,
@@ -2074,6 +2227,7 @@ final class AutoMineController {
         OPEN_EC_FOR_STORE,
         TAKE_BACKPACK_FROM_EC,
         PLACE_BACKPACK_FOR_STORE,
+        CLEAR_SHULKER_AREA_FOR_STORE,
         OPEN_PLACED_BACKPACK,
         STORE_ORES_IN_BACKPACK,
         PICKUP_STORED_BACKPACK,
