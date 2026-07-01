@@ -112,7 +112,14 @@ final class AutoNetherWartController {
     }
 
     static void initialize(Minecraft client) {
+        preloadNestedClasses();
         applyConfig(client, AutoNetherWartConfig.get(client));
+    }
+
+    private static void preloadNestedClasses() {
+        Action.values();
+        RefillState.values();
+        new Target(BlockPos.ZERO, Action.PLANT, Vec3.ZERO);
     }
 
     static void registerCommands(CommandDispatcher<FabricClientCommandSource> dispatcher) {
@@ -260,7 +267,14 @@ final class AutoNetherWartController {
             releaseAutoWalk(client);
         }
 
-        List<Target> targets = findTargets(client);
+        List<Target> targets;
+        try {
+            targets = findTargets(client);
+        } catch (LinkageError error) {
+            ScreenProbe.LOGGER.error("Auto nether wart failed to load nested classes. The mod jar may have been replaced while Minecraft was running.", error);
+            stop(client, "自动下界疣加载失败：mod jar 可能是在游戏运行时被覆盖了。请重启游戏后再输入 /autowart。");
+            return;
+        }
         if (targets.isEmpty()) {
             sendThrottledProgress(client, "范围内没有可处理的成熟下界疣或空灵魂沙。", PROGRESS_MESSAGE_TICKS);
             return;
