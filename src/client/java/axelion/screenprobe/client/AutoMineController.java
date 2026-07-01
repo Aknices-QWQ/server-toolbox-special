@@ -27,6 +27,7 @@ import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.Vec3;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
@@ -50,6 +51,7 @@ final class AutoMineController {
     private static final int SHULKER_INITIAL_PLACE_DISTANCE = 2;
     private static final int JUNK_DROP_COOLDOWN_TICKS = 4;
     private static final int SHULKER_CLEAR_TIMEOUT_TICKS = 20 * 20;
+    private static final int FOOTING_BLOCK_KEEP_COUNT = 64 * 2;
     private static final Pattern BACKPACK_NAME_PATTERN = Pattern.compile("背包(\\d+)");
     private static final Pattern TEMP_BACKPACK_NAME_PATTERN = Pattern.compile("临时背包(\\d+)");
     private static final Set<String> DIAMOND_KEEP_IDS = Set.of(
@@ -1301,9 +1303,10 @@ final class AutoMineController {
             return;
         }
         Inventory inventory = client.player.getInventory();
+        Set<Integer> keptFootingSlots = keptFootingBlockSlots(inventory);
         for (int slot = 0; slot < Inventory.INVENTORY_SIZE; slot++) {
             ItemStack stack = inventory.getItem(slot);
-            if (stack.isEmpty() || isKeepStack(stack)) {
+            if (stack.isEmpty() || isKeepStack(stack) || keptFootingSlots.contains(slot)) {
                 continue;
             }
             if (isJunkStack(stack)) {
@@ -1338,6 +1341,43 @@ final class AutoMineController {
     private static boolean isJunkStack(ItemStack stack) {
         String id = BuiltInRegistries.ITEM.getKey(stack.getItem()).toString();
         return isJunkId(id);
+    }
+
+    private static Set<Integer> keptFootingBlockSlots(Inventory inventory) {
+        Set<Integer> kept = new HashSet<>();
+        int remaining = FOOTING_BLOCK_KEEP_COUNT;
+        for (int priority = 3; priority >= 1 && remaining > 0; priority--) {
+            for (int slot = 0; slot < Inventory.INVENTORY_SIZE && remaining > 0; slot++) {
+                if (kept.contains(slot)) {
+                    continue;
+                }
+                ItemStack stack = inventory.getItem(slot);
+                if (stack.isEmpty() || footingBlockPriority(stack) != priority) {
+                    continue;
+                }
+                kept.add(slot);
+                remaining -= stack.getCount();
+            }
+        }
+        return kept;
+    }
+
+    private static int footingBlockPriority(ItemStack stack) {
+        if (stack == null || stack.isEmpty()) {
+            return 0;
+        }
+        String id = BuiltInRegistries.ITEM.getKey(stack.getItem()).toString();
+        if (id.equals("minecraft:stone") || id.equals("minecraft:cobblestone") || id.equals("minecraft:netherrack")) {
+            return 3;
+        }
+        if (id.equals("minecraft:deepslate") || id.equals("minecraft:cobbled_deepslate")
+                || id.equals("minecraft:blackstone") || id.equals("minecraft:basalt")) {
+            return 2;
+        }
+        if (id.contains("stone") || id.contains("cobblestone") || id.contains("netherrack")) {
+            return 1;
+        }
+        return 0;
     }
 
     private static boolean isJunkId(String id) {
@@ -1543,6 +1583,15 @@ final class AutoMineController {
         return inventory.getSelectedSlot();
     }
 
+    private static int playerInventorySlotFromMenuIndex(int slotIndex, int menuSlotCount) {
+        int playerInventoryStart = Math.max(0, menuSlotCount - 36);
+        int playerSlotIndex = slotIndex - playerInventoryStart;
+        if (playerSlotIndex < 27) {
+            return playerSlotIndex + Inventory.getSelectionSize();
+        }
+        return playerSlotIndex - 27;
+    }
+
     private static boolean isPickaxe(ItemStack stack) {
         if (stack == null || stack.isEmpty()) {
             return false;
@@ -1637,12 +1686,14 @@ final class AutoMineController {
         int moved = 0;
         List<Slot> slots = screen.getMenu().slots;
         int playerInventoryStart = Math.max(0, slots.size() - 36);
+        Set<Integer> keptFootingSlots = keptFootingBlockSlots(client.player.getInventory());
         for (int slotIndex = playerInventoryStart; slotIndex < slots.size(); slotIndex++) {
             Slot slot = slots.get(slotIndex);
             if (slot == null || !slot.hasItem() || !slot.isActive()) {
                 continue;
             }
-            if (!shouldMoveToTemporaryBackpack(slot.getItem())) {
+            int inventorySlot = playerInventorySlotFromMenuIndex(slotIndex, slots.size());
+            if (keptFootingSlots.contains(inventorySlot) || !shouldMoveToTemporaryBackpack(slot.getItem())) {
                 continue;
             }
             clickContainerSlot(client, screen, slotIndex, 0, ContainerInput.QUICK_MOVE);
@@ -1759,8 +1810,9 @@ final class AutoMineController {
             return false;
         }
         Inventory inventory = client.player.getInventory();
+        Set<Integer> keptFootingSlots = keptFootingBlockSlots(inventory);
         for (int slot = 0; slot < Inventory.INVENTORY_SIZE; slot++) {
-            if (shouldMoveToTemporaryBackpack(inventory.getItem(slot))) {
+            if (!keptFootingSlots.contains(slot) && shouldMoveToTemporaryBackpack(inventory.getItem(slot))) {
                 return true;
             }
         }
